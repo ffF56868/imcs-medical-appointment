@@ -1,0 +1,277 @@
+# ============================================================
+# IMCS 智能医疗预约诊疗系统 —— 容器编排
+# ============================================================
+# 与旧 docker-compose.yml 完全独立：旧文件是 MySQL + Milvus + etcd + MinIO
+# 的纯 RAG 系统，本文件是 PostgreSQL/pgvector + Celery 的 IMCS。
+# 两者端口不重叠，可同时运行以便对比。
+#
+# 端口约定（与 app/core/config.py 的注释一致，本机其他项目已占用常见端口）：
+#   PostgreSQL 5433 | Redis 6380 | API 8010 | Flower 5556 | Nginx 8080
+#
+# 启动：  docker compose -f docker-compose.imcs.yml up -d --build
+# 可选：  --profile monitoring  额外启动 Flower 监控面板
+#         --profile evaluate    额外启动评测队列 worker（阶段 6 使用）
+# ============================================================
+
+name: imcs
+
+services:
+  # ---------- PostgreSQL 16 + pgvector ----------
+  # 官方 pgvector 镜像已内置 vector 扩展，无需自定义镜像编译。
+  # 迁移脚本里的 CREATE EXTENSION IF NOT EXISTS vector 因此能直接成功。
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: imcs
+      POSTGRES_USER: imcs
+      POSTGRES_PASSWORD: ${IMCS_POSTGRES_PASSWORD:-imcs_password}
+      # 中文排序与分词行为固定，避免不同宿主机 collation 差异导致检索结果不一致
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    ports:
+      - "${IMCS_POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - imcs_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imcs -d imcs"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------- Redis ----------
+  # 一个实例按 db 号隔离四种用途，避免多实例的内存与运维开销：
+  #   db0 Celery broker | db1 Celery result backend | db2 缓存与限流（core/cache.py）
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "${IMCS_REDIS_HOST_PORT:-6380}:6379"
+    volumes:
+      - imcs_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------- 一次性初始化：建表 + 种子数据 ----------
+  # 独立成服务而非塞进 api 的启动命令，原因有二：
+  #   1. 多副本部署时只有一个实例该跑迁移，放进 api 会产生竞争
+  #   2. 迁移失败应当阻断整个栈启动，而不是让 api 带着半残 schema 上线
+  # 迁移与种子都是幂等的，重启栈会重复执行但不会产生脏数据。
+  init-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+      args:
+        HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+    env_file:
+      - .env
+    environment: &backend_env
+      # 关键：这里显式覆盖，不用 ${DATABASE_URL}。
+      # 旧 .env 里的 DATABASE_URL 指向 MySQL，若被插值进来，
+      # pydantic-settings 会用它连库，整个 IMCS 会静默连到错误的数据库。
+      # compose 中 environment 优先级高于 env_file，因此覆盖是可靠的。
+      DATABASE_URL: postgresql+psycopg://imcs:${IMCS_POSTGRES_PASSWORD:-imcs_password}@postgres:5432/imcs
+      SYNC_DATABASE_URL: postgresql+psycopg://imcs:${IMCS_POSTGRES_PASSWORD:-imcs_password}@postgres:5432/imcs
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ENVIRONMENT: ${IMCS_ENVIRONMENT:-development}
+      DEBUG: ${IMCS_DEBUG:-false}
+      JWT_SECRET_KEY: ${IMCS_JWT_SECRET_KEY:-change-me-in-production}
+    command: >
+      sh -c "alembic upgrade head
+             && python -m app.seed.run_all"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------- FastAPI ----------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+      args:
+        HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+      API_HOST: 0.0.0.0
+      API_PORT: "8010"
+    ports:
+      - "${IMCS_API_HOST_PORT:-8010}:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8010
+      --workers ${IMCS_API_WORKERS:-2}
+      --proxy-headers --forwarded-allow-ips "*"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8010/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------- Celery worker：向量化队列 ----------
+  # 与在线队列物理隔离。知识库重建可能跑数十分钟且吃满 embedding 配额，
+  # 若与报告解读同队列，一次重建会把所有患者的 AI 解读堵死。
+  # 并发度低（2）是刻意的：单个任务内部已用批量 embedding 打满 IO，
+  # 再提高进程数只会互相抢配额并放大限流概率。
+  worker-vectorize:
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+    command: >
+      celery -A app.tasks.celery_app:celery_app worker
+      --queues=vectorize --concurrency=2
+      --loglevel=info --pool=prefork
+      --hostname=vectorize@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------- Celery worker：在线队列 ----------
+  # interpret（报告解读、分诊补偿）+ default（普通任务、监控聚合）。
+  # 这两类都是用户在前端等结果的，并发度给高一些。
+  worker-online:
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+    command: >
+      celery -A app.tasks.celery_app:celery_app worker
+      --queues=interpret,default --concurrency=4
+      --loglevel=info --pool=prefork
+      --hostname=online@%h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------- Celery worker：评测队列（可选）----------
+  # 并发 1：RAGAS 评测是 LLM 配额消耗大户，与在线业务并行会挤占真实用户额度。
+  # 挂在 evaluate profile 下，日常开发不启动。
+  worker-evaluate:
+    profiles: ["evaluate"]
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+    command: >
+      celery -A app.tasks.celery_app:celery_app worker
+      --queues=evaluate --concurrency=1
+      --loglevel=info --pool=prefork
+      --hostname=evaluate@%h
+    depends_on:
+      redis:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------- Celery beat：定时调度（可选）----------
+  # 驱动 celery_app.conf.beat_schedule 里的两个周期任务：
+  # AI 指标聚合（每 60s）与僵尸任务清理（每 300s）。
+  # 全栈只能有一个 beat 实例，否则定时任务会被重复触发。
+  beat:
+    profiles: ["monitoring"]
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+    command: >
+      celery -A app.tasks.celery_app:celery_app beat
+      --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+      init-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------- Flower：Celery 监控面板（可选）----------
+  flower:
+    profiles: ["monitoring"]
+    build:
+      context: .
+      dockerfile: Dockerfile.imcs
+    env_file:
+      - .env
+    environment:
+      <<: *backend_env
+    command: >
+      celery -A app.tasks.celery_app:celery_app flower
+      --port=5555 --address=0.0.0.0
+    ports:
+      - "${IMCS_FLOWER_HOST_PORT:-5556}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- Nginx：统一入口 ----------
+  # 前端静态资源与 API 反代都走这里，对外只暴露一个端口。
+  # SSE 流式对话依赖 nginx.conf 里的 proxy_buffering off，
+  # 否则 token 会被缓冲到响应结束才一次性吐出，流式效果完全失效。
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${IMCS_NGINX_HOST_PORT:-8080}:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      # 阶段 7 前端构建产物挂进来即可，无需重建镜像
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  imcs_pgdata:
+  imcs_redisdata:

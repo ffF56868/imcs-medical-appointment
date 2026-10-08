@@ -1,0 +1,75 @@
+# ============================================================
+# IMCS 运行时依赖（与旧 RAG 系统解耦）
+# ============================================================
+# 为什么单独一份清单：根目录 requirements.txt 里混着旧系统的
+# pymilvus / langchain-milvus / sqlmodel / pymysql / pdf2image / pytesseract。
+# 其中 pdf2image 需要系统装 poppler、pytesseract 需要装 tesseract，
+# ragas 与 pymilvus 又会拉进大量传递依赖——IMCS 镜像装这些纯属浪费，
+# 且会显著拖慢每次 rebuild。
+#
+# 旧模块文件仍保留在仓库里（不挂载），因此本清单**不含**旧系统依赖。
+# 若某天需要重新启用旧入口 app/main.py 的 legacy 分支，请改用 requirements.txt。
+# ============================================================
+
+# ---------- Web 框架 ----------
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.12
+
+# ---------- 配置 ----------
+pydantic>=2.9
+pydantic-settings>=2.6
+python-dotenv>=1.0
+
+# ---------- 数据库：SQLAlchemy 2.0 异步 + PostgreSQL/pgvector ----------
+# psycopg v3 同时提供同步与异步驱动，二者共用 postgresql+psycopg dialect：
+# create_async_engine 走 AsyncConnection，create_engine 走同步 Connection。
+# 因此 FastAPI 与 Celery worker 可以共用同一份模型定义与连接串格式。
+sqlalchemy[asyncio]>=2.0.36
+psycopg[binary]>=3.2
+pgvector>=0.3.6
+alembic>=1.14
+
+# ---------- 认证 ----------
+PyJWT>=2.10
+
+# ---------- 缓存与异步任务 ----------
+redis>=5.2
+celery[redis]>=5.4
+# Flower 只在启用 monitoring profile 的容器里用到，但装进同一镜像可避免
+# 为它单独维护一个 Dockerfile
+flower>=2.0
+
+# ---------- LLM 供应商 ----------
+# OpenAI 官方 SDK 同时适配 DashScope 的 OpenAI 兼容端点，
+# 因此两个供应商共用一个 SDK，切换只改 base_url 与 api_key
+openai>=1.55
+# 精确 token 计数。不可用时 token_budget 会退化为字符数估算（见配置项
+# token_char_ratio_fallback），因此它是增强项而非硬依赖
+tiktoken>=0.8
+
+# ---------- 中文分词 ----------
+# 应用层用 jieba 分词后写入 tsvector，避免为中文分词定制 PostgreSQL 镜像
+# （zhparser/pg_jieba 都需要自行编译 PG 扩展，部署成本高得多）
+jieba>=0.42.1
+
+# ---------- 文档解析（阶段 2 知识库导入使用）----------
+langchain-text-splitters>=0.3
+pypdf>=5.1
+python-docx>=1.1
+openpyxl>=3.1
+beautifulsoup4>=4.12
+
+# ---------- 测试 ----------
+pytest>=8.3
+pytest-asyncio>=0.24
+httpx>=0.28
+# 单元测试用 SQLite 内存库。models/types.py 里的 JSONBText / TextArray /
+# TSVectorText 都是 TypeDecorator，在非 PG 后端自动退化为 TEXT，
+# 因此测试无需真实 PostgreSQL 即可覆盖大部分业务逻辑
+aiosqlite>=0.20
+
+# ---------- 评测（阶段 6 迁移 RAGAS 时使用）----------
+# 体积较大且只在 evaluate 队列的任务里用到；若镜像构建过慢可临时注释，
+# 阶段 6 之前不影响任何在线功能
+ragas==0.2.15

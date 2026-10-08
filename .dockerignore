@@ -8,3 +8,13 @@ medical_health.db
 chroma_db/
 sample_documents/
 
+# 前端源码与依赖不进镜像：Nginx 通过挂载 frontend/dist 提供静态资源，
+# Python 镜像里带上 node_modules 只会让每次构建的上下文传输多几百 MB
+frontend/
+node_modules/
+dist/
+.ragas-inspect/
+.ragas-run-*.json
+.idea/
+deploy/
+

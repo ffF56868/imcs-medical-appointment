@@ -7,3 +7,12 @@ database.db
 medical_health.db
 chroma_db/
 
+# IDE 本地状态。workspace.xml 记录窗口布局与打开的文件，
+# 每台机器都不同，提交后会频繁产生无意义冲突
+.idea/
+
+# 一次性文档生成脚本与 RAGAS 评测输出，均为生成物而非源码
+gen_doc.js
+.ragas-run-*.json
+.ragas-inspect/
+

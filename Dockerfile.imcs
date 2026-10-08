@@ -1,0 +1,52 @@
+# ============================================================
+# IMCS 镜像：FastAPI + Celery 共用同一个镜像
+# ============================================================
+# 为什么 API 与 worker 共用镜像：二者依赖完全一致（都要 models、services、
+# tasks），只是启动命令不同。拆成两个镜像意味着两套构建缓存与两份漂移风险，
+# 收益为零。compose 里用不同 command 区分即可。
+#
+# 与旧 Dockerfile 的区别：
+#   - 依赖清单换成 requirements-imcs.txt（不含 pymilvus / sqlmodel / pdf2image）
+#   - 额外 COPY migrations/ 与 alembic.ini，容器内需要跑 alembic upgrade head
+#   - 端口 8010（旧系统占 8003，两者可同时运行互不冲突）
+# ============================================================
+
+FROM python:3.12-slim
+
+# 构建期代理。仅用于 pip 拉包，运行时不注入容器环境，
+# 避免应用把内网代理地址带进 LLM 请求
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+
+# PYTHONUNBUFFERED：日志实时输出到 docker logs，不被缓冲
+# PYTHONDONTWRITEBYTECODE：不生成 .pyc，镜像层更干净
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# 先只 COPY 依赖清单，利用 Docker 层缓存：
+# 改业务代码不会触发重新 pip install，rebuild 从数分钟降到数秒
+COPY requirements-imcs.txt ./
+RUN pip install --no-cache-dir -r requirements-imcs.txt
+
+# 业务代码与迁移脚本
+COPY app ./app
+COPY migrations ./migrations
+COPY alembic.ini ./
+COPY scripts ./scripts
+COPY pytest.ini ./
+COPY tests ./tests
+
+# 非 root 运行。容器逃逸时降低影响面；数据卷目录需可写，
+# 因此由 compose 侧保证挂载点权限，这里不 chown 整个 /app
+RUN useradd --create-home --uid 10001 imcs
+USER imcs
+
+EXPOSE 8010
+
+# 默认启动 API。worker / beat / flower / migrate 在 compose 里各自覆盖 command
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
