@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from sqlmodel import Session, select
 
 from app.database import create_db_and_tables, engine
-from app.models import KnowledgeDocument
+from app.legacy.models import KnowledgeDocument
 
 
 INITIAL_SOURCE = "项目内置常见病概览（待专业审核）"

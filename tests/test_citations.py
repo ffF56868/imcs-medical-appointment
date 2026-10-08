@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from sqlmodel import Session
 
-from app.models import KnowledgeDocument
+from app.legacy.models import KnowledgeDocument
 from app.routers.ask import build_references
 from app.vector_store import build_knowledge_documents
 

@@ -1,22 +1,55 @@
-fastapi
-uvicorn[standard]
+# ---------- IMCS 新架构依赖 ----------
+# Web 框架
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart
+
+# 配置
+pydantic>=2.9
+pydantic-settings>=2.6
+python-dotenv
+
+# 数据库：SQLAlchemy 2.0 异步 + PostgreSQL/pgvector
+# psycopg v3 同时提供同步与异步驱动，Celery worker 与 FastAPI 共用一个驱动
+sqlalchemy[asyncio]>=2.0.36
+psycopg[binary]>=3.2
+pgvector>=0.3.6
+alembic>=1.14
+
+# 认证
+PyJWT>=2.10
+
+# 缓存与异步任务
+redis>=5.2
+celery[redis]>=5.4
+flower>=2.0
+
+# LLM 供应商（OpenAI 官方 SDK 同时适配 DashScope 的 OpenAI 兼容端点）
+openai>=1.55
+tiktoken>=0.8
+
+# 中文分词（应用层分词写入 tsvector，避免定制 PostgreSQL 镜像）
+jieba>=0.42.1
+
+# 文本处理与文档解析（沿用旧项目已验证实现）
+langchain-text-splitters>=0.3
+pypdf>=5.1
+python-docx>=1.1
+openpyxl>=3.1
+beautifulsoup4>=4.12
+
+# 测试
+pytest>=8.3
+pytest-asyncio>=0.24
+httpx>=0.28
+aiosqlite>=0.20
+
+# ---------- 旧 RAG 系统依赖（legacy 模块仍在用，逐阶段移除）----------
 sqlmodel
 pymysql
-redis>=5,<7
 langchain-milvus>=0.4,<0.5
 pymilvus>=3,<4
 langchain-openai
-langchain-text-splitters
 ragas==0.2.15
-python-dotenv
-python-multipart
-pypdf
-python-docx
-openpyxl
-beautifulsoup4
-# OCR dependencies for scanned PDFs
 pytesseract>=0.3.10
 pdf2image>=1.16.0
-pytest
-httpx
-

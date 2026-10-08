@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session
 
-from app.models import (
+from app.legacy.models import (
     AnswerFeedback,
     RAGEvaluationRun,
     RAGQualityEvaluationRun,

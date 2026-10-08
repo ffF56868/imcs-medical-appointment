@@ -10,9 +10,9 @@ from app.memory import (
     get_memory_state,
     get_recent_messages,
 )
-from app.models import User, UserMemory
+from app.legacy.models import User, UserMemory
 from app.routers.auth import get_current_user
-from app.schemas import (
+from app.legacy.schemas import (
     MemoryDeleteResponse,
     MemoryMessageRead,
     MemoryOverview,

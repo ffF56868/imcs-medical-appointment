@@ -2,7 +2,7 @@ from fastapi import Request
 from sqlmodel import Session
 
 from app.database import engine
-from app.models import SecurityAuditLog, User
+from app.legacy.models import SecurityAuditLog, User
 
 
 def record_admin_request(

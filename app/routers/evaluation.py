@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app.database import engine, get_session
 from app.hybrid_search import hybrid_search, normalize_retrieval_strategy
-from app.models import (
+from app.legacy.models import (
     Condition,
     Drug,
     KnowledgeDocument,
@@ -25,7 +25,7 @@ from app.ragas_compat import enable_ragas_langchain_compatibility
 from app.ragas_metrics import build_medical_answer_relevancy_metric
 from app.routers.ask import get_chat_model, run_rag_answer_pipeline
 from app.routers.auth import require_admin
-from app.schemas import (
+from app.legacy.schemas import (
     RAGASAutoEvaluationRunListResponse,
     RAGASAutoEvaluationRunRead,
     RAGASMetricScores,

@@ -1,6 +1,6 @@
 from sqlmodel import Session, select
 
-from app.models import ChatMessage, KnowledgeDocument, User
+from app.legacy.models import ChatMessage, KnowledgeDocument, User
 
 
 def register_user(client, account="user@example.com"):

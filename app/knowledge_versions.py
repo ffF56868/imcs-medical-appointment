@@ -3,7 +3,7 @@ from hashlib import sha256
 
 from sqlmodel import Session, delete, select
 
-from app.models import Condition, Drug, KnowledgeDocument, KnowledgeSnapshot
+from app.legacy.models import Condition, Drug, KnowledgeDocument, KnowledgeSnapshot
 
 
 def serialize_source_record(record: Condition | Drug | KnowledgeDocument) -> dict:

@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import AnswerFeedback, ChatMessage, User
+from app.legacy.models import AnswerFeedback, ChatMessage, User
 from app.routers.auth import get_current_user, require_admin
-from app.schemas import (
+from app.legacy.schemas import (
     FeedbackCreate,
     FeedbackDetail,
     FeedbackGroup,

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import (
+from app.legacy.models import (
     AnswerFeedback,
     ChatMessage,
     RAGEvaluationRun,
@@ -15,7 +15,7 @@ from app.models import (
     User,
 )
 from app.routers.auth import require_admin
-from app.schemas import (
+from app.legacy.schemas import (
     MonitoringFailureRead,
     MonitoringFeedbackSnapshot,
     MonitoringPathMetric,

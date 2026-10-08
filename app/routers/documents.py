@@ -12,9 +12,9 @@ from app.document_parsers import (
     parse_uploaded_file,
     parse_web_page,
 )
-from app.models import KnowledgeDocument, User
+from app.legacy.models import KnowledgeDocument, User
 from app.routers.auth import get_current_user, require_admin
-from app.schemas import (
+from app.legacy.schemas import (
     DocumentUploadBatchResponse,
     DocumentUploadError,
     DocumentUploadItem,

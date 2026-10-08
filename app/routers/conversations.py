@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import AnswerFeedback, ChatMessage, User
+from app.legacy.models import AnswerFeedback, ChatMessage, User
 from app.routers.auth import get_current_user
-from app.schemas import ChatMessageRead, ConversationSummary
+from app.legacy.schemas import ChatMessageRead, ConversationSummary
 
 
 router = APIRouter(

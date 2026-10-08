@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import Session
 
-from app.models import RAGRequestMetric
+from app.legacy.models import RAGRequestMetric
 
 
 def record_request_metric(

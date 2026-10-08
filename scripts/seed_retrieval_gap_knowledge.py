@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.cache import invalidate_knowledge_status_cache
 from app.database import engine
-from app.models import Condition, KnowledgeDocument
+from app.legacy.models import Condition, KnowledgeDocument
 
 
 # These phrases correspond to the ten cases that missed their expected record

@@ -5,9 +5,9 @@ from sqlmodel import Session, select
 
 from app.database import get_session
 from app.cache import invalidate_knowledge_status_cache
-from app.models import Drug, User
+from app.legacy.models import Drug, User
 from app.routers.auth import get_current_user, require_admin
-from app.schemas import DrugCreate, DrugRead
+from app.legacy.schemas import DrugCreate, DrugRead
 
 
 router = APIRouter(

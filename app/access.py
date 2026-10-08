@@ -7,7 +7,7 @@ meaning of the existing public knowledge base.
 
 from sqlmodel import select
 
-from app.models import KnowledgeDocument, User
+from app.legacy.models import KnowledgeDocument, User
 
 
 PUBLIC_KNOWLEDGE_BASE_ID = "global"

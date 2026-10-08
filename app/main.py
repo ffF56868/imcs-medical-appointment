@@ -29,7 +29,7 @@ from app.routers import (
     monitoring,
     memory,
 )
-from app.schemas import HealthResponse
+from app.legacy.schemas import HealthResponse
 from app.vector_store import get_knowledge_status
 
 

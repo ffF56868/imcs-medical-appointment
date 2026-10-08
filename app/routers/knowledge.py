@@ -13,7 +13,7 @@ from app.knowledge_versions import (
     get_current_snapshot_hash,
     restore_snapshot_payload,
 )
-from app.models import (
+from app.legacy.models import (
     Condition,
     Drug,
     KnowledgeDocument,
@@ -23,7 +23,7 @@ from app.models import (
     User,
 )
 from app.routers.auth import get_current_user, require_admin
-from app.schemas import (
+from app.legacy.schemas import (
     KnowledgeRebuildResponse,
     KnowledgeRebuildJobListResponse,
     KnowledgeRebuildJobRead,

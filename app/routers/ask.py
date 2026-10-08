@@ -12,9 +12,9 @@ from langchain_openai import ChatOpenAI
 from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import ChatMessage, User
+from app.legacy.models import ChatMessage, User
 from app.routers.auth import get_current_user
-from app.schemas import AskRequest, AskResponse
+from app.legacy.schemas import AskRequest, AskResponse
 from app.hybrid_search import (
     build_vector_filter,
     extract_keyword_terms,

@@ -8,7 +8,7 @@ from sqlmodel import Session, create_engine, select
 from app.database import create_db_and_tables
 from app.document_parsers import ParsedDocument
 from app.main import health_check
-from app.models import (
+from app.legacy.models import (
     KnowledgeDocument,
     KnowledgeRebuildJob,
     RAGASAutoEvaluationRun,

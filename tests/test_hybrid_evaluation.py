@@ -1,9 +1,9 @@
 from langchain_core.documents import Document
 from sqlmodel import Session
 
-from app.models import Drug
+from app.legacy.models import Drug
 from app.routers import evaluation as evaluation_router
-from app.schemas import RetrievalStrategyResult
+from app.legacy.schemas import RetrievalStrategyResult
 
 
 class IrrelevantVectorStore:

@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.database import get_session
-from app.models import User
+from app.legacy.models import User
 from app.routers import (
     ask,
     auth,

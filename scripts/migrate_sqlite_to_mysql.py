@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from sqlmodel import Session, SQLModel, select
 
 from app.database import build_engine, create_db_and_tables
-from app.models import (
+from app.legacy.models import (
     AnswerFeedback,
     ChatMessage,
     Condition,

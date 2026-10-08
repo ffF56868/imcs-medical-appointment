@@ -16,7 +16,7 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.access import accessible_documents_statement
-from app.models import Condition, Drug, KnowledgeDocument, User
+from app.legacy.models import Condition, Drug, KnowledgeDocument, User
 from app.reranker import rerank_matches
 from app.source_metadata import needs_source_review
 

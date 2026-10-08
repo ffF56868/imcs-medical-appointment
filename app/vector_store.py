@@ -8,7 +8,7 @@ from langchain_milvus import Milvus
 from langchain_openai import OpenAIEmbeddings
 from sqlmodel import Session, select
 
-from app.models import Condition, Drug, KnowledgeDocument, KnowledgeIndexState
+from app.legacy.models import Condition, Drug, KnowledgeDocument, KnowledgeIndexState
 from app.cache import (
     KNOWLEDGE_STATUS_CACHE_KEY,
     KNOWLEDGE_STATUS_CACHE_TTL_SECONDS,

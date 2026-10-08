@@ -1,7 +1,7 @@
 from sqlalchemy import inspect
 
 from app.database import build_engine, create_db_and_tables
-from app.models import Condition
+from app.legacy.models import Condition
 
 
 def test_sqlite_engine_uses_sqlite_compatible_connection_options():

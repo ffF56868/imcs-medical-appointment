@@ -8,8 +8,8 @@ from sqlmodel import Session, select
 
 from app.database import get_session
 from app.cache import LOGIN_RATE_LIMIT_PER_MINUTE, consume_fixed_window_limit
-from app.models import LoginAttempt, SecurityAuditLog, User, UserSession
-from app.schemas import (
+from app.legacy.models import LoginAttempt, SecurityAuditLog, User, UserSession
+from app.legacy.schemas import (
     AuthLoginRequest,
     AuthRegisterRequest,
     AuthResponse,

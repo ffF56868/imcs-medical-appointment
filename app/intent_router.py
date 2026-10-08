@@ -28,7 +28,7 @@ from app.memory import (
     get_recent_messages,
     format_long_term_memory,
 )
-from app.models import User
+from app.legacy.models import User
 
 
 class IntentChannel(str, Enum):

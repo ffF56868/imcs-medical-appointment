@@ -5,7 +5,7 @@ from app.memory import (
     remember_explicit_user_facts,
     update_short_term_memory,
 )
-from app.models import ChatMessage, ConversationMemoryState, User, UserMemory
+from app.legacy.models import ChatMessage, ConversationMemoryState, User, UserMemory
 
 
 def make_user() -> User:

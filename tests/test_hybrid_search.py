@@ -8,7 +8,7 @@ from app.hybrid_search import (
     keyword_search,
     merge_retrieval_matches,
 )
-from app.models import Drug, KnowledgeDocument, User
+from app.legacy.models import Drug, KnowledgeDocument, User
 
 
 class StrategyVectorStore:

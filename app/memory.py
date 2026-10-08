@@ -21,7 +21,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from app.models import ChatMessage, ConversationMemoryState, User, UserMemory
+from app.legacy.models import ChatMessage, ConversationMemoryState, User, UserMemory
 
 
 # ── Working Memory ────────────────────────────────────────────────────────────
