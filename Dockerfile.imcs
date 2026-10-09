@@ -30,8 +30,15 @@ WORKDIR /app
 
 # 先只 COPY 依赖清单，利用 Docker 层缓存：
 # 改业务代码不会触发重新 pip install，rebuild 从数分钟降到数秒
+#
+# PyPI 官方源从国内容器内直连不稳定（实测 fastapi 成功后 pydantic 断连），
+# 固定走清华镜像源；retry/timeout 兜住偶发抖动。
+# 若以后部署到海外服务器，删掉 -i 那一行即回到官方源。
 COPY requirements-imcs.txt ./
-RUN pip install --no-cache-dir -r requirements-imcs.txt
+RUN pip install --no-cache-dir \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple \
+      --retries 5 --timeout 60 \
+      -r requirements-imcs.txt
 
 # 业务代码与迁移脚本
 COPY app ./app
@@ -49,4 +56,5 @@ USER imcs
 EXPOSE 8010
 
 # 默认启动 API。worker / beat / flower / migrate 在 compose 里各自覆盖 command
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+# 入口是 imcs_main 而非 main：旧 RAG 系统的 app.main 保留可独立运行
+CMD ["uvicorn", "app.imcs_main:app", "--host", "0.0.0.0", "--port", "8010"]

@@ -62,6 +62,9 @@ services:
   #   2. 迁移失败应当阻断整个栈启动，而不是让 api 带着半残 schema 上线
   # 迁移与种子都是幂等的，重启栈会重复执行但不会产生脏数据。
   init-db:
+    # 七个服务共用同一镜像：显式声明后，只要本地已有 imcs-api:latest，
+    # up 就不会触发重复构建（规避本机 docker bake 并行构建的 gRPC 报错）
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -83,9 +86,9 @@ services:
       ENVIRONMENT: ${IMCS_ENVIRONMENT:-development}
       DEBUG: ${IMCS_DEBUG:-false}
       JWT_SECRET_KEY: ${IMCS_JWT_SECRET_KEY:-change-me-in-production}
-    command: >
-      sh -c "alembic upgrade head
-             && python -m app.seed.run_all"
+    # 单行书写：YAML 折叠块里缩进更深的下一行会保留换行符，
+    # 实测导致 "&&" 出现在第二行行首，sh 直接语法报错（迁移本身已成功）
+    command: sh -c "alembic upgrade head && python -m app.seed.run_all"
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,6 +98,7 @@ services:
 
   # ---------- FastAPI ----------
   api:
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -117,7 +121,7 @@ services:
       init-db:
         condition: service_completed_successfully
     command: >
-      uvicorn app.main:app
+      uvicorn app.imcs_main:app
       --host 0.0.0.0 --port 8010
       --workers ${IMCS_API_WORKERS:-2}
       --proxy-headers --forwarded-allow-ips "*"
@@ -136,6 +140,7 @@ services:
   # 并发度低（2）是刻意的：单个任务内部已用批量 embedding 打满 IO，
   # 再提高进程数只会互相抢配额并放大限流概率。
   worker-vectorize:
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -161,6 +166,7 @@ services:
   # interpret（报告解读、分诊补偿）+ default（普通任务、监控聚合）。
   # 这两类都是用户在前端等结果的，并发度给高一些。
   worker-online:
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -187,6 +193,7 @@ services:
   # 挂在 evaluate profile 下，日常开发不启动。
   worker-evaluate:
     profiles: ["evaluate"]
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -212,6 +219,7 @@ services:
   # 全栈只能有一个 beat 实例，否则定时任务会被重复触发。
   beat:
     profiles: ["monitoring"]
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs
@@ -232,6 +240,7 @@ services:
   # ---------- Flower：Celery 监控面板（可选）----------
   flower:
     profiles: ["monitoring"]
+    image: imcs-api:latest
     build:
       context: .
       dockerfile: Dockerfile.imcs

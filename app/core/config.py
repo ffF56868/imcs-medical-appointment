@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
     login_rate_limit_per_minute: int = Field(default=30, ge=1, le=300)
 
+    # ---------- CORS ----------
+    # 逗号分隔的允许源。开发期前端是 Vite dev server（默认 5173），
+    # 生产环境由 Nginx 同源提供静态资源，通常不需要再加别的源。
+    # 用字符串而非 list[str]：pydantic-settings 解析环境变量时，
+    # 列表类型要求 JSON 字面量（'["a","b"]'），在 .env / compose 里极易写错；
+    # 逗号串在 shell 和 compose 里都是自然写法。拆分逻辑见 imcs_main.cors_origins()。
+    cors_allow_origins: str = "http://localhost:5173"
+
     # ---------- LLM 供应商 ----------
     # DashScope 提供 OpenAI 兼容端点，因此两个供应商共用 openai SDK
     openai_api_key: str = ""
