@@ -16,3 +16,9 @@ gen_doc.js
 .ragas-run-*.json
 .ragas-inspect/
 
+# 容器实测的临时产物：构建日志、接口响应、临时校验脚本。
+# login_resp.json 一类文件含真实 JWT 令牌，绝不能进版本库
+.tmp_*
+login_resp.json
+.verify_*.py
+

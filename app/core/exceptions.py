@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from fastapi import HTTPException, status
+from fastapi import status
+from fastapi.responses import JSONResponse
 
 
 class ErrorCode:
@@ -59,14 +60,26 @@ class IMCSError(Exception):
         self.detail = detail or {}
         super().__init__(self.message)
 
-    def to_http_exception(self) -> HTTPException:
-        """转换为 FastAPI HTTPException，错误码放在 detail.code 供前端读取。"""
-        return HTTPException(
+    def to_response(self) -> JSONResponse:
+        """转换为可直接作为 ASGI 响应的 ``JSONResponse``。
+
+        错误码放在 ``detail.code``，前端据此做分支处理（如 401 跳登录页）。
+
+        **为什么返回 JSONResponse 而不是 HTTPException**：Starlette 的
+        ``@app.exception_handler`` 会把处理器的返回值当作 ASGI 应用直接调用
+        （``await response(scope, receive, send)``）。HTTPException 是普通异常
+        对象而非 Response，返回它会在响应阶段抛 TypeError，被外层兜底成
+        500——结果是所有业务异常（401/403/409/429）统统退化成
+        「服务器内部错误」，错误码也一并丢失。
+        """
+        return JSONResponse(
             status_code=self.status_code,
-            detail={
-                "code": self.code,
-                "message": self.message,
-                **self.detail,
+            content={
+                "detail": {
+                    "code": self.code,
+                    "message": self.message,
+                    **self.detail,
+                }
             },
         )
 
@@ -195,8 +208,14 @@ class StructuredOutputError(IMCSError):
 
 
 def register_exception_handlers(app) -> None:
-    """把业务异常统一转换为带错误码的 HTTP 响应。"""
+    """把业务异常统一转换为带错误码的 JSON 响应。
+
+    必须返回 Response 实例而非 HTTPException：见 ``IMCSError.to_response``
+    的说明。此前返回 HTTPException 会让所有业务异常在响应阶段二次抛错，
+    被兜底处理器吞成 500，前端拿不到 code 也就无法区分「密码错误」
+    与「账号被锁定」。
+    """
 
     @app.exception_handler(IMCSError)
-    async def _handle_imcs_error(request, exc: IMCSError):  # noqa: ARG001
-        return exc.to_http_exception()
+    async def _handle_imcs_error(request, exc: IMCSError) -> JSONResponse:  # noqa: ARG001
+        return exc.to_response()

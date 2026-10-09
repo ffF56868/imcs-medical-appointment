@@ -13,11 +13,11 @@ tsvector / pgvector 都是 TypeDecorator，非 PG 方言会自动退化为 TEXT�
 2. 提供「认证链路所需表」的白名单建表函数。显式白名单而非「全表减去不兼容表」，
    是为了让建表范围一目了然，也不会因为某天新增一张 PG 专有表就让整套用例莫名变红。
 
-另外一处必须知道的坑：``register_exception_handlers`` 把 IMCSError 转成
-``HTTPException`` 后原样抛出，而 Starlette 的自定义 Exception 处理器并不美化
-HTTPException —— 它会绕过 app 级中间件栈，导致响应体是
-``{"detail": {"code": ..., "message": ...}}`` 而非 FastAPI 的正常校验错误结构。
-测试断言据此写，见 ``error_code_of``。
+错误响应结构：``IMCSError`` 经 ``register_exception_handlers`` 转成
+``JSONResponse``，形如 ``{"detail": {"code": ..., "message": ...}}``；
+而 FastAPI 自身的校验错误是扁平的 ``{"detail": [ ... ]}``。两者形态不同，
+因此测试统一通过 ``error_code_of`` 取值（扁平形态返回 None），
+不要在用例里直接下标取 ``["detail"]["code"]``。
 """
 
 from __future__ import annotations

@@ -78,8 +78,11 @@ async def seed_rbac(db: AsyncSession) -> dict[str, int]:
         created["permissions"] += 1
 
     # ---------- 3. 角色-权限关联 ----------
-    # 一次性载入全部关联，避免在循环里逐条查询（N+1）
-    link_rows = (await db.execute(select(RolePermission))).all()
+    # 一次性载入全部关联，避免在循环里逐条查询（N+1）。
+    # 必须用 .scalars()：.all() 返回的是单列包装行（row[0] 才是实体），
+    # 直接 row.role_id 会 AttributeError——空表时循环不进，这个错误只在
+    # 第二次及以后执行 seed_rbac 时才暴露（init-db 容器重启即触发）。
+    link_rows = (await db.execute(select(RolePermission))).scalars().all()
     existing_links = {(row.role_id, row.permission_id) for row in link_rows}
 
     role_id_by_name = {
