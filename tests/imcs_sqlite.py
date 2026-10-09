@@ -23,8 +23,8 @@ tsvector / pgvector 都是 TypeDecorator，非 PG 方言会自动退化为 TEXT�
 from __future__ import annotations
 
 import sqlalchemy as sa
-from sqlalchemy.dialects import sqlite
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.ext.compiler import compiles
 
 import app.models  # noqa: F401  - 触发全部 ORM 表注册，Base.metadata 才完整
 from app.models.base import Base
@@ -33,12 +33,21 @@ from app.models.base import Base
 # ==================== PG UUID → SQLite ====================
 
 
-@sqlite.register_compile_context(PGUUID, PGUUID.__visit_name__)
+@compiles(PGUUID, "sqlite")
 def _compile_pg_uuid_on_sqlite(element: PGUUID, compiler, **kwargs) -> str:  # noqa: ANN001
     """SQLite 上没有原生 UUID 类型，DDL 退化为 CHAR(32)。
 
-    PGUUID 继承自 ``sqlalchemy.Uuid``，其 ``bind_processor`` / ``result_processor``
-    不依赖方言，读写行为保持 ``uuid.UUID`` ↔ hex 文本，因此只需补 DDL 编译。
+    不注册这个编译器的话，``Base.metadata.create_all(sqlite_engine)`` 会抛
+    ``UnsupportedCompilationError``：PGUUID 只为 postgresql 方言提供 DDL 渲染。
+
+    **必须用 ``sqlalchemy.ext.compiler.compiles``**，它是 SQLAlchemy 提供的
+    自定义 DDL 渲染扩展点，第二个参数是方言名。写成
+    ``sqlite.register_compile_context`` 之类的形式并不存在，会在 import
+    阶段直接 AttributeError 并中断整个测试文件的收集。
+
+    只补 DDL、不碰 DML：PGUUID 继承自 ``sqlalchemy.Uuid``，其
+    ``bind_processor`` / ``result_processor`` 不依赖方言，读写行为仍是
+    ``uuid.UUID`` ↔ 32 位 hex 文本，因此 service 层拿到的类型完全一致。
     """
     del element, compiler, kwargs
     return "CHAR(32)"
@@ -116,16 +125,24 @@ def seed_roles(conn) -> None:  # noqa: ANN001
 
 
 def build_session_factory(engine):  # noqa: ANN001
-    """把同步引擎包成异步 Session 工厂，供测试覆盖 ``get_db`` 使用。
+    """为同一套文件库构造异步 Session 工厂，供测试覆盖 ``get_db`` 使用。
 
-    为什么用 ``AsyncEngine(sync_engine)`` 而不是手写同步 Session + greenlet 桥接：
-    SQLAlchemy 官方提供的这层包装会把同步连接池的操作交给 greenlet_spawn，
-    业务代码拿到的就是标准 ``AsyncSession``，await 语义天然成立。
-    这样被测 service 无需为测试做任何妥协。
+    **为什么不能 ``AsyncEngine(sync_engine)``**：``AsyncEngine.__init__``
+    首行就校验 ``sync_engine.dialect.is_async``——它接受的是「aiosqlite 这类
+    异步方言的底层同步外观」，不是任意同步引擎。传纯同步引擎会直接抛
+    ``InvalidRequestError``（实测打挂了全部 31 个用例）。
+
+    正确做法：用同一文件库 DSN 换 ``sqlite+aiosqlite`` 方言重新
+    ``create_async_engine``。同步引擎负责建表与 db_read 直读断言，
+    异步引擎承载被测会话——两条连接读写同一文件库，串行性由 SQLite
+    自身的锁与 busy timeout 保证，测试规模下足够。
+
+    返回的 sessionmaker 其引擎挂在 ``kw["bind"]``，调用方须在 fixture
+    结束时 dispose（``kw["bind"]`` 即该 AsyncEngine）。
     """
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    async_engine = AsyncEngine(engine)
+    async_engine = create_async_engine(engine.url.set(drivername="sqlite+aiosqlite"))
     return async_sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
 
 

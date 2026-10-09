@@ -226,16 +226,24 @@ async def register(db: AsyncSession, payload: RegisterRequest) -> User:
     )
 
     try:
-        # 主键走应用侧 default=uuid.uuid4（见 models/base.UUIDPrimaryKey），
-        # 构造时即有值，因此能直接建档案，不必先 flush 拿 ID。
+        # 必须先 flush 才能拿到 user.id：SQLAlchemy 的 ``default=uuid.uuid4``
+        # 是 **flush 时** 才执行的列默认值，构造 User() 的瞬间 ``user.id`` 仍是 None。
+        # 若直接把 None 传给 PatientProfile.user_id，会违反 NOT NULL 约束，
+        # 整个注册事务回滚并被下面的 IntegrityError 分支误报成「用户名已被注册」
+        # ——实测中数据库里一个测试账号都没建出来，正是这个原因。
+        await db.flush()
+        profile.user_id = user.id
         db.add(profile)
         await db.commit()
     except IntegrityError as exc:
         # 兜住「查重通过但并发插入撞唯一约束」的竞争窗口。
-        # commit 失败时 SQLAlchemy 已把会话置为 needs_rollback，显式 rollback
-        # 只是让意图可读，不承担实际清理工作。
-        logger.info("注册唯一约束冲突：username=%s", username)
-        raise HTTPException(status_code=409, detail="该用户名已被注册") from exc
+        # 冲突字段不一定就是 username（phone / email 同样有唯一约束），
+        # 因此提示语不指名具体字段，避免误导用户去改一个并不冲突的输入。
+        # commit 失败时 SQLAlchemy 已把会话置为 needs_rollback，
+        # 后续请求由 get_db 的会话生命周期负责回收。
+        await db.rollback()
+        logger.info("注册唯一约束冲突：username=%s detail=%s", username, exc.orig)
+        raise HTTPException(status_code=409, detail="该账号信息已被注册，请更换后重试") from exc
 
     return user
 

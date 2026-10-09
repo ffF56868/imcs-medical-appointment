@@ -23,7 +23,6 @@ import pytest
 import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.pool import StaticPool
 
 from app.core.database import get_db
 from app.imcs_main import app
@@ -115,38 +114,81 @@ class FakeRedis:
         self.expires[key] = datetime.now(UTC).timestamp() + seconds
         return True
 
+    def pipeline(self, *, transaction: bool = True) -> "_FakePipeline":
+        """返回事务式管道，仅覆盖 increment_with_ttl 用到的命令组合。
+
+        真实 redis-py 的 pipeline 命令入队后统一 execute；这里同样先记
+        操作、execute 时依次跑本实例的命令实现，行为对齐。
+        """
+        return _FakePipeline(self)
+
+
+class _FakePipeline:
+    """FakeRedis 的最小 pipeline 替身：记录命令，execute 时依次执行。"""
+
+    def __init__(self, owner: FakeRedis) -> None:
+        self._owner = owner
+        self._commands: list[tuple[str, tuple]] = []
+
+    def incrby(self, key: str, amount: int) -> "_FakePipeline":
+        self._commands.append(("incrby", (key, amount)))
+        return self
+
+    def ttl(self, key: str) -> "_FakePipeline":
+        self._commands.append(("ttl", (key,)))
+        return self
+
+    async def execute(self) -> list:
+        results = []
+        for name, args in self._commands:
+            results.append(await getattr(self._owner, name)(*args))
+        self._commands.clear()
+        return results
+
 
 @pytest.fixture()
 def fake_redis() -> Iterator[FakeRedis]:
-    """替换认证服务持有的 cache_client。
+    """同时替换两处 cache_client 引用，保证计数与限流绝不落到真实 Redis。
 
-    打补丁的目标是 ``auth_service.cache_client`` 而不是 ``core.cache.cache_client``：
-    auth_service 用的是 ``from ... import`` ，持有的是导入时刻绑定的模块属性引用，
-    改源模块属性不会影响已导入的名字。
+    **必须打两个补丁**，只打一个会留下真实副作用：
+    - ``auth_service.cache_client``：auth_service 用 ``from ... import`` 直接
+      调 get/set/delete/exists 命令，它持有的是导入时刻绑定的对象引用，
+      必须就地替换该模块属性；
+    - ``core.cache.cache_client``：限流与失败计数走 ``increment_with_ttl``，
+      该函数在 core.cache 内部引用**源模块全局**的 cache_client——
+      不补丁这里的话，登录失败计数会真实写进 compose 里的 Redis，
+      跨用例累积到阈值后提前触发 423，把「错密码应返回 401」的用例打挂
+      （实测正是这个原因失败）。
     """
+    from app.core import cache as core_cache
+
     client = FakeRedis()
-    original = auth_service.cache_client
+    originals = (auth_service.cache_client, core_cache.cache_client)
     auth_service.cache_client = client
+    core_cache.cache_client = client
     try:
         yield client
     finally:
-        auth_service.cache_client = original
+        auth_service.cache_client, core_cache.cache_client = originals
 
 
 # ==================== 数据库 ====================
 
 
 @pytest.fixture()
-def engine():
-    """内存 SQLite 引擎 + 认证表 + 角色种子。
+def engine(tmp_path):
+    """文件型 SQLite 引擎 + 认证表 + 角色种子。
 
-    StaticPool 让所有会话共用同一条连接：``sqlite://`` 内存库的生命周期绑定在
-    连接上，换连接等于换了个空库。
+    为什么从内存库改为文件库：被测会话走 aiosqlite 异步引擎连同一个库，
+    而 ``sqlite://`` 内存库的生命周期绑定在单条连接上——同步引擎建完表，
+    异步引擎拿到的是另一条连接、另一个空库，所有用例都会在首个查询处
+    报 ``no such table``。文件库让两条连接落到同一份数据，
+    读写串行由 SQLite 自身的文件锁与默认 5 秒 busy timeout 保证。
     """
+    db_path = tmp_path / "imcs_test.db"
     test_engine = sa.create_engine(
-        "sqlite://",
+        f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     with test_engine.begin() as conn:
         create_auth_schema(conn)
@@ -157,25 +199,40 @@ def engine():
 
 @pytest.fixture()
 async def client(engine, fake_redis) -> AsyncIterator[AsyncClient]:
-    """指向被测应用的异步客户端，并把 ``get_db`` 重定向到内存库。
+    """指向被测应用的异步客户端，并把 ``get_db`` 重定向到测试库。
 
     用 dependency_overrides 而非改 settings：core.database 在 import 时就建好了
     PG 引擎，改配置只能改代码；覆盖依赖则完全绕开它。
-    会话工厂用 ``AsyncEngine(sync_engine)`` 包装同步引擎，业务代码拿到的仍是
-    标准 AsyncSession，await 语义天然成立。
+    会话工厂用 aiosqlite 方言连同一文件库（见 build_session_factory）。
+
+    另外替换 ``imcs_main`` 模块级的 async_session_factory 与 check_redis：
+    /health 端点不经 get_db 依赖，直接用这两个模块属性探活。不替换的话，
+    模块级真实 PG 引擎会在第一个用例的事件循环里悄悄建连接，
+    循环关闭后连接池清理就抛 ``Event loop is closed``（实测打挂 6 个用例）。
+    teardown 顺序：先恢复补丁再 dispose，避免清理路径再次踩到已关闭的循环。
     """
+    import app.imcs_main as imcs_main_module
+
     session_factory = build_session_factory(engine)
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             yield session
 
+    async def fake_check_redis() -> bool:
+        return not fake_redis.fail_mode
+
+    originals = (imcs_main_module.async_session_factory, imcs_main_module.check_redis)
+    imcs_main_module.async_session_factory = session_factory
+    imcs_main_module.check_redis = fake_check_redis
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
 
     app.dependency_overrides.clear()
+    imcs_main_module.async_session_factory, imcs_main_module.check_redis = originals
+    await session_factory.kw["bind"].dispose()
 
 
 @pytest.fixture()
@@ -221,8 +278,14 @@ def bearer(token: str) -> dict[str, str]:
 
 
 def test_routes_mounted() -> None:
-    """确认路由挂载完整。即使建表方案在某环境不成立，也能在收集阶段暴露 import 错误。"""
-    paths = {route.path for route in app.routes}
+    """确认路由挂载完整。
+
+    用 openapi 的 paths 而非遍历 ``app.routes``：新版 FastAPI 的 include_router
+    把子路由包成 ``_IncludedRouter`` 挂在 app.routes 上，该包装对象没有
+    ``path`` 属性（实测 AttributeError），不同版本内部结构还会变。
+    openapi schema 是对外的稳定契约，遍历它版本无关。
+    """
+    paths = set(app.openapi()["paths"])
     for expected in (
         "/api/v1/auth/register",
         "/api/v1/auth/login",

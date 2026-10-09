@@ -66,9 +66,11 @@ app = FastAPI(
     description="智能医疗预约诊疗系统：分诊导诊、挂号排班、就诊病历、检查报告、处方发药与收费闭环",
     version=settings.app_version,
     lifespan=lifespan,
-    docs_url=None if _is_production else "/docs",
-    redoc_url=None if _is_production else "/redoc",
-    openapi_url=None if _is_production else "/openapi.json",
+    # 文档端点统一挂在 /api 前缀下：Nginx 只反代 /api/，若 docs 留在 /docs
+    # 则经网关访问会 404（实测已复现），只有直连 8010 才能打开
+    docs_url=None if _is_production else "/api/docs",
+    redoc_url=None if _is_production else "/api/redoc",
+    openapi_url=None if _is_production else "/api/openapi.json",
 )
 
 # ---------- 异常处理 ----------
@@ -118,14 +120,18 @@ async def add_security_headers(request: Request, call_next):
     - Referrer-Policy —— 跨域跳转时不外泄完整路径（含患者 ID 这类信息）
     - Permissions-Policy —— 后端 API 用不到摄像头/麦克风/定位，一律拒绝，
       避免被恶意页面借本域发起授权弹窗
-    - 令牌属敏感凭证，/auth/ 响应禁止任何缓存
+    - 令牌属敏感凭证，认证接口响应禁止任何缓存（no-store），
+      否则代理或浏览器可能把 access_token 留在缓存里被后续读取
     """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith("/auth/"):
+    # 用「路径中含 /auth/」而非前缀匹配：认证路由实际挂在
+    # /api/v1/auth/... 下，早先写成 startswith("/auth/") 永远不命中，
+    # 导致登录响应缺失 no-store（实测复现）。子串匹配对前缀调整也更稳健。
+    if "/auth/" in request.url.path:
         response.headers["Cache-Control"] = "no-store"
     return response
 

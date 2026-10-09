@@ -32,11 +32,28 @@ redis_client: Redis = Redis.from_url(
 
 # 语义缓存与限流用独立的库，避免与 Celery broker（db0）、result backend（db1）
 # 的键空间混在一起，便于按库清空与监控。
-# db= 参数会覆盖 URL 里解析出的库号。
 CACHE_DB_INDEX = 2
+
+
+def _url_with_db(url: str, db_index: int) -> str:
+    """把连接串末尾的库号替换为指定值。
+
+    **为什么不直接传 ``db=`` 关键字**：``Redis.from_url`` 会先解析 URL 中的
+    ``/db`` 路径，其结果**覆盖**显式传入的 ``db`` 参数（实测 ``settings.redis_url``
+    为 ``redis://redis:6379/0`` 时，``from_url(url, db=2)`` 得到的仍是 db0）。
+    于是缓存键会与 Celery broker 挤在同一个库里，既无法按库清空，
+    也违背上面「独立库」的设计意图。改为直接重写 URL，行为不依赖
+    redis-py 的参数优先级实现细节。
+    """
+    base, _, tail = url.rpartition("/")
+    if base and tail.isdigit():
+        return f"{base}/{db_index}"
+    # URL 未带库号（如 redis://host:6379），直接追加
+    return f"{url.rstrip('/')}/{db_index}"
+
+
 cache_client: Redis = Redis.from_url(
-    settings.redis_url,
-    db=CACHE_DB_INDEX,
+    _url_with_db(settings.redis_url, CACHE_DB_INDEX),
     decode_responses=True,
     socket_connect_timeout=1,
     socket_timeout=1,

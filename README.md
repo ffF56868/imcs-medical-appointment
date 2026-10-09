@@ -1,3 +1,47 @@
+# IMCS 智能医疗预约诊疗系统（重构进行中）
+
+> 本仓库正在从「医疗健康助手」（纯 RAG 问答）升级为 **IMCS 智能医疗预约诊疗系统**：
+> FastAPI + SQLAlchemy 2.0 异步 + PostgreSQL/pgvector + Celery + Redis + OpenAI/DashScope，
+> 面向患者、医生、检验科、收费员、药师、超级管理员六类角色，
+> 打通智能分诊、预约挂号、接诊、检查报告、AI 解读、病历、处方、收费、发药全流程。
+
+## 重构进度
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 0 运行底座 | Alembic 迁移、Docker 编排、IMCS 入口、认证层、种子数据、测试 | ✅ 完成 |
+| 1 架构地基 | 24 张表模型、统一 LLM 服务层、RBAC、状态机、Celery 队列 | ✅ 完成 |
+| 2 RAG 知识底座 | pgvector + PG 全文检索 + RRF 融合、知识库向量化 | 待做 |
+| 3-6 | 分诊预约 / 接诊报告 / 处方收费发药 / AI 可观测与评测 | 待做 |
+| 7 前端 | Vue 3 + TypeScript + Element Plus | 待做 |
+
+## IMCS 启动方式（阶段 0 已可运行）
+
+```bash
+# 完整启动：PostgreSQL/pgvector、Redis、迁移+种子、API、两类 Celery worker、Nginx
+docker compose -f docker-compose.imcs.yml up -d --build
+
+# 可选：任务监控面板（Flower）与定时聚合
+docker compose -f docker-compose.imcs.yml --profile monitoring up -d
+```
+
+| 地址 | 用途 |
+| --- | --- |
+| http://localhost:8080 | Nginx 统一入口（当前为占位页，阶段 7 接入前端） |
+| http://localhost:8080/api/docs | Swagger 接口文档 |
+| http://localhost:8010/health | API 健康检查 |
+| http://localhost:5433 | PostgreSQL（宿主机映射端口） |
+
+演示账号（种子数据，密码统一 `Imcs2026demo`）：`patient01`、`doctor01`、`lab01`、`cashier01`、`pharmacist01`、`admin`。生产部署前必须改密并删除演示账号。
+
+环境变量：参照 `.env.example.imcs` 填写 `.env`，至少填 `OPENAI_API_KEY` 与 `DASHSCOPE_API_KEY`，并把 `IMCS_JWT_SECRET_KEY` 换成强随机值。
+
+测试：`docker compose -f docker-compose.imcs.yml exec api python -m pytest tests -p no:cacheprovider`（当前 34 个认证用例全绿）。
+
+---
+
+以下为旧「医疗健康助手」（RAG 问答系统）的原始说明。旧系统代码完整保留、可独立运行（`docker compose up -d`，端口 8003），但已不属于 IMCS 的演进路线。
+
 # 医疗健康助手
 
 > 基于 FastAPI、LangChain、OpenAI、Milvus、MySQL 和 Redis 的医疗健康 RAG 知识库问答系统。

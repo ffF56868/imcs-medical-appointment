@@ -105,12 +105,19 @@ celery_app.conf.update(
 
 
 @setup_logging.connect
-def _configure_celery_logging() -> None:
+def _configure_celery_logging(**kwargs: Any) -> None:
     """接管 Celery 日志配置，让它与应用日志格式一致。
 
     不接管的话 Celery 会自己配一套 root logger，覆盖应用的日志设置，
     导致业务日志格式混乱、级别失效。
+
+    必须带 ``**kwargs``：Celery 的 Signal._connect_signal 会强制校验接收器
+    签名，不接受关键字参数就直接抛
+    ``ValueError: Signal receiver must accept keyword arguments``，
+    导致 worker 在 import 阶段崩溃、无限重启。派发时会传入 sender 等参数，
+    本函数不需要它们，因此收下即弃。
     """
+    del kwargs
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",

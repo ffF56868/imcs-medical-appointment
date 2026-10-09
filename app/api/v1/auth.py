@@ -14,14 +14,15 @@
 from __future__ import annotations
 
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import ClientIP, DbSession, FreshCurrentUser, bearer_scheme
-from app.core.exceptions import AuthenticationError
+from app.api.deps import ClientIP, DbSession, bearer_scheme
+from app.core.exceptions import AuthenticationError, ResourceNotFoundError
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
 from app.models.auth import Role, User
 from app.schemas.auth import (
@@ -58,6 +59,31 @@ async def require_active_access_token(
 
 
 ActiveAccessToken = Annotated[dict[str, Any], Depends(require_active_access_token)]
+
+
+async def require_active_fresh_user(
+    token_payload: ActiveAccessToken,
+    db: DbSession,
+) -> User:
+    """吊销校验 + 回表，供 auth 自身需要「令牌必须真的还活着」的接口使用。
+
+    **为什么 ``/me`` 不能直接用 ``FreshCurrentUser``**：后者只做 JWT 解析与回表，
+    不查黑名单，于是登出后的旧令牌仍能读到用户资料——「退出登录」形同虚设。
+    实测中确实复现了这一点（logout 返回 204 后 /me 仍 200）。
+
+    为什么不干脆给全局 ``get_current_user`` 加黑名单检查：那会让每个请求
+    都多一次 Redis 往返，推翻「无状态令牌零 IO」的设计收益。这里只对
+    语义上必须校验的接口付这个代价。业务接口的取舍见 auth_service.assert_not_revoked。
+    """
+    user = await db.get(User, UUID(str(token_payload["sub"])))
+    if user is None:
+        raise ResourceNotFoundError("用户不存在")
+    if not user.is_active:
+        raise AuthenticationError("账号已被停用")
+    return user
+
+
+ActiveFreshUser = Annotated[User, Depends(require_active_fresh_user)]
 
 
 async def _role_name(db: AsyncSession, user: User) -> str:
@@ -128,11 +154,13 @@ async def logout(
 
 
 @router.get("/me", response_model=UserOut, summary="当前用户信息")
-async def me(current_user: FreshCurrentUser) -> UserOut:
+async def me(current_user: ActiveFreshUser) -> UserOut:
     """回表取用户，因此能反映实时的 ``is_active`` 与完整档案字段。
 
-    用 ``FreshCurrentUser`` 而非轻量 ``CurrentUser``：/me 是前端渲染头像、
-    姓名、角色的数据来源，必须是真值；且账号被停用时应立刻报错而不是继续展示旧资料。
+    用 ``ActiveFreshUser`` 而非 ``FreshCurrentUser``：/me 是前端渲染头像、
+    姓名、角色的数据来源，必须是真值；账号被停用时应立刻报错而不是继续展示旧资料。
+    更关键的是它同时校验令牌未被吊销——否则登出后的旧令牌仍能读到用户资料，
+    「退出登录」形同虚设（实测已复现该问题）。
     """
     return auth_service.to_user_out(current_user)
 
