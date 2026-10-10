@@ -173,6 +173,64 @@ def error_message_of(response) -> str:  # noqa: ANN001
     return str(payload)
 
 
+def seed_role_permissions(conn) -> None:  # noqa: ANN001
+    """按 rbac_matrix 的权限矩阵灌入 permissions 与 role_permissions。
+
+    **为什么单列一个函数而并进 seed_roles**：认证测试用轻量 JWT 依赖，
+    从不查权限表，最小种子（只有 roles）就够；知识管理测试走
+    ``require_permission``，它按 (resource, action) 查 role_permissions JOIN
+    permissions——空表时非 admin 角色**永远 403**（admin 被依赖工厂直接放行，
+    所以只灌 roles 的旧用例全绿、唯独医生读用例翻车，实测复现）。
+    数据源直接取 ``ROLE_PERMISSIONS`` 矩阵本身而不是手抄：测试验证的就是
+    真实授权边界，矩阵改了测试种子自动跟随，不会出现两处漂移。
+    permissions.id 用 enumerate 顺序号即可——权限 ID 没有跨表引用，
+    只有 (resource, action) 唯一约束需要成立。
+    """
+    from app.services.rbac_matrix import ROLE_PERMISSIONS
+
+    existing = {row[0] for row in conn.execute(sa.text("SELECT id FROM permissions")).fetchall()}
+    if existing:
+        return  # 已灌过则整体跳过：两表数据必须同进同退
+
+    perm_ids: dict[tuple[str, str], int] = {}
+    next_id = 1
+    for role, permissions in ROLE_PERMISSIONS.items():
+        for resource, action in sorted(permissions):
+            key = (resource, action)
+            if key in perm_ids:
+                continue
+            perm_ids[key] = next_id
+            conn.execute(
+                sa.text(
+                    "INSERT INTO permissions (id, resource, action, description) "
+                    "VALUES (:id, :resource, :action, NULL)"
+                ),
+                {"id": next_id, "resource": resource, "action": action},
+            )
+            next_id += 1
+
+    link_existing = {
+        (row[0], row[1])
+        for row in conn.execute(
+            sa.text("SELECT role_id, permission_id FROM role_permissions")
+        ).fetchall()
+    }
+    for role, permissions in ROLE_PERMISSIONS.items():
+        role_id = ROLE_IDS[role.value]
+        for key in sorted(permissions):
+            pair = (role_id, perm_ids[key])
+            if pair in link_existing:
+                continue
+            conn.execute(
+                sa.text(
+                    "INSERT INTO role_permissions (role_id, permission_id) "
+                    "VALUES (:role_id, :perm_id)"
+                ),
+                {"role_id": pair[0], "perm_id": pair[1]},
+            )
+            link_existing.add(pair)
+
+
 __all__ = [
     "AUTH_TABLES",
     "ROLE_IDS",
@@ -182,5 +240,6 @@ __all__ = [
     "create_auth_schema_async",
     "error_code_of",
     "error_message_of",
+    "seed_role_permissions",
     "seed_roles",
 ]

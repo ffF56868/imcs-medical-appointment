@@ -41,6 +41,10 @@ class ErrorCode:
     LLM_STRUCTURED_OUTPUT_INVALID = "llm_structured_output_invalid"
     AI_TASK_NOT_FOUND = "ai_task_not_found"
 
+    # 异步任务派发
+    TASK_ALREADY_RUNNING = "task_already_running"
+    TASK_QUEUE_UNAVAILABLE = "task_queue_unavailable"
+
     # 检索
     RETRIEVAL_NO_RESULT = "retrieval_no_result"
 
@@ -205,6 +209,47 @@ class StructuredOutputError(IMCSError):
     code = ErrorCode.LLM_STRUCTURED_OUTPUT_INVALID
     status_code = status.HTTP_502_BAD_GATEWAY
     default_message = "AI 返回格式异常"
+
+
+class DuplicateTaskError(IMCSError):
+    """同类异步任务已在执行中，拒绝重复派发。
+
+    用 409 而不是 400：客户端的请求本身合法，冲突在于服务端已有一个
+    同型任务占位。知识库重建会「删旧切块再建新切块」，两个重建并发执行
+    会交错删除，留下半套向量——所以这里必须硬拒而不是排队等第二个。
+    ``task_id`` 带回已有任务 ID，前端可直接跳去查看它的进度而不必自己再查一次。
+    """
+
+    code = ErrorCode.TASK_ALREADY_RUNNING
+    status_code = status.HTTP_409_CONFLICT
+    default_message = "已有同类任务正在执行，请等待完成后再试"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        task_type: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        detail: dict[str, object] = {}
+        if task_type is not None:
+            detail["task_type"] = task_type
+        if task_id is not None:
+            detail["task_id"] = task_id
+        super().__init__(message, detail=detail or None)
+
+
+class TaskQueueUnavailableError(IMCSError):
+    """Celery broker 不可用，任务未能派发。
+
+    用 503 而非 500：这是依赖暂时不可用，重试可能成功，不该记成程序错误。
+    业务数据此时已经落库（文档写进去了，只是没索引），因此不能吞掉异常假装成功——
+    用户必须知道「资料存下了但还检索不到」。
+    """
+
+    code = ErrorCode.TASK_QUEUE_UNAVAILABLE
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_message = "任务队列暂时不可用，请稍后重试"
 
 
 def register_exception_handlers(app) -> None:
