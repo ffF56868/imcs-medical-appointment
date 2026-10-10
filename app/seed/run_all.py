@@ -11,8 +11,8 @@
 「角色建好了但账号没建」这种半成品状态。半成品状态最难排查，
 因为下次重跑时幂等逻辑会跳过已存在的部分，错误被掩盖。
 
-知识库种子数据（病症、药物、检验参考值、临床指南）不在此处，
-它属于阶段 2 的 RAG 检索工作，由 ``app/seed/knowledge.py`` 提供。
+知识库种子数据（病症、健康宣教、就医警示）由 ``app/seed/knowledge.py``
+提供，在科室与用户之后写入（知识文档可选关联科室 ID）。
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_factory
 from app.seed.departments import seed_departments
+from app.seed.knowledge import seed_knowledge
 from app.seed.rbac import seed_rbac
 from app.seed.schedules import seed_schedules
 from app.seed.users import DEMO_PASSWORD, seed_users
@@ -50,7 +51,11 @@ async def seed_all(db: AsyncSession, *, include_schedules: bool = True) -> dict[
     # 3. 用户与患者档案
     stats["users_created"] = await seed_users(db)
 
-    # 4. 医生排班。依赖用户已存在，因此排在最后。
+    # 4. 知识文档。依赖科室已存在（可选关联 department_id），
+    #    不依赖用户，放在排班之前。
+    stats["knowledge_created"] = await seed_knowledge(db)
+
+    # 5. 医生排班。依赖用户已存在，因此排在最后。
     if include_schedules:
         stats["schedules_created"] = await seed_schedules(db)
 

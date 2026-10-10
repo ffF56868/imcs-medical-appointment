@@ -6,6 +6,7 @@
 """
 
 from app.seed.departments import DEPARTMENTS, seed_departments
+from app.seed.knowledge import seed_knowledge
 from app.seed.rbac import seed_rbac
 from app.seed.users import DEMO_USERS, seed_users
 
@@ -13,6 +14,7 @@ __all__ = [
     "DEPARTMENTS",
     "DEMO_USERS",
     "seed_departments",
+    "seed_knowledge",
     "seed_rbac",
     "seed_users",
 ]
