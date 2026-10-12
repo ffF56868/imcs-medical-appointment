@@ -12,11 +12,18 @@ Celery 的 result backend 只保留 1 小时，不能当长期状态源。
 from __future__ import annotations
 
 import logging
+import uuid
 
+from sqlalchemy import select
+
+from app.core.database import async_session_factory
+from app.models.ai import TriageResult
+from app.services.triage_workflow import assess
 from app.tasks.celery_app import (
     QUEUE_EVALUATE,
     QUEUE_INTERPRET,
     celery_app,
+    run_async,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,17 +66,96 @@ def interpret_exam_report(self, report_id: str, ai_task_id: str) -> dict:
     soft_time_limit=45,
     acks_late=True,
 )
-def run_triage_workflow(self, triage_id: str, ai_task_id: str) -> dict:
-    """智能分诊工作流（异步模式）。
+def run_triage_workflow(self, triage_id: str, ai_task_id: str = "") -> dict:
+    """智能分诊工作流（异步补偿）。
 
-    分诊主路径是**同步**的——患者在前端等结果，同步返回体验更好。
-    这个异步版本用于两种场景：
-    1. 批量分诊评估（跑历史数据算分诊准确率）
-    2. 同步路径降级后的补偿：LLM 超时时先返回规则分诊结果，
-       异步任务稍后补算 LLM 结果并更新记录
+    分诊主路径是**同步**的——患者在前端等结果。本异步任务用于 docstring
+    所述的两种场景：批量评估、以及规则先行结果的事后 LLM 补偿。
+    输入是一条已存在的 TriageResult（通常由 batch-assess 的规则先行落库），
+    重跑 assess 带 existing 把结论升级为 AI/hybrid。
+
+    **幂等**：decision_source 已是 ai/hybrid 的记录跳过（不重复烧配额）；
+    补偿后仍是 rule（LLM 仍降级）也计一次已处理，不无限重投。
+    父任务进度用行锁读改写的 done 计数收敛到 completed，
+    不依赖 decision_source（避免降级条目永远到不了终态）。
     """
-    logger.info("分诊工作流任务启动 triage_id=%s", triage_id)
-    raise NotImplementedError("阶段 3 实现：智能分诊与预约挂号")
+    from datetime import UTC, datetime as dt
+
+    from app.core.database import get_sync_db
+    from app.services import knowledge_service as ks
+
+    triage_uuid = _parse_id(triage_id)
+    task_uuid = _parse_id(ai_task_id) if ai_task_id else None
+
+    async def _compensate() -> dict[str, object]:
+        async with async_session_factory() as db:
+            record = await db.get(TriageResult, triage_uuid)
+            if record is None:
+                logger.error("分诊补偿找不到 triage id=%s", triage_uuid)
+                return {"triage_id": str(triage_uuid), "status": "not_found"}
+            if record.decision_source in ("ai", "hybrid"):
+                return {
+                    "triage_id": str(triage_uuid),
+                    "status": "already_compensated",
+                    "decision_source": record.decision_source,
+                }
+            outcome = await assess(
+                db,
+                chief_complaint=record.chief_complaint,
+                user_id=record.user_id,
+                patient_id=record.patient_id,
+                ai_task_id=task_uuid,
+                trace_id=record.trace_id,
+                existing=record,
+            )
+            return {
+                "triage_id": str(outcome.triage_id),
+                "status": "compensated",
+                "decision_source": outcome.decision_source,
+                "degraded": outcome.degraded,
+                "recommended_department_name": outcome.department_name,
+            }
+
+    result = run_async(_compensate())
+
+    # ---------- 父任务进度收敛（批量场景）----------
+    if task_uuid is not None:
+        with get_sync_db() as sync_session:
+            task = ks.load_task_for_update_sync(sync_session, task_uuid)
+            if task is not None and task.status in ("pending", "running", "retrying"):
+                payload = task.payload or {}
+                total = int(payload.get("total", 0)) or 1
+                done = int(payload.get("done", 0)) + 1
+                payload["done"] = done
+                task.payload = payload
+                if task.status == "pending":
+                    ks.set_task_status_sync(
+                        sync_session, task, "running", progress=0,
+                        progress_message=f"分诊补偿 {done}/{total}",
+                    )
+                if done >= total:
+                    ks.set_task_status_sync(
+                        sync_session, task, "completed", progress=100,
+                        progress_message=f"分诊补偿完成 {done}/{total}",
+                        result={"total": total, "done": done},
+                    )
+                else:
+                    ks.set_task_status_sync(
+                        sync_session, task, task.status,
+                        progress=min(95, int(done / total * 100)),
+                        progress_message=f"分诊补偿 {done}/{total}",
+                    )
+                sync_session.commit()
+
+    return result
+
+
+def _parse_id(raw: str) -> uuid.UUID:
+    """把传入的 ID 转成 UUID。非法值抛 ValueError 让 Celery 记为任务失败。"""
+    try:
+        return uuid.UUID(str(raw))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"id 不是合法 UUID：{raw!r}") from exc
 
 
 @celery_app.task(

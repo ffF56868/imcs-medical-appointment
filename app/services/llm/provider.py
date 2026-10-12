@@ -358,6 +358,28 @@ def get_adapter(provider: ProviderName | str) -> ProviderAdapter:
     return adapter
 
 
+def reset_adapter_clients() -> None:
+    """清空适配器缓存，下次 ``get_adapter`` 会重建客户端。
+
+    **为什么必须存在**：``AsyncOpenAI`` 内含 httpx 连接池，而 httpx 的连接
+    绑定到**首次使用时正在运行的事件循环**。FastAPI 进程里循环只有一个，
+    进程级缓存是免费的；但 Celery prefork worker 每个任务用
+    ``asyncio.run()`` 新建并关闭一个循环——第二个任务复用旧客户端时，
+    连接池里躺着属于上一个已关闭循环的连接，调用会抛
+    ``RuntimeError: Event loop is closed``（或更隐蔽的跨循环挂起）。
+
+    所以 ``celery_app.run_async()`` 在每个任务开始前调用本函数丢弃缓存，
+    让任务在自己的循环里重建客户端。代价是每次重建连接池（几十毫秒），
+    相对 LLM 调用的秒级耗时可以忽略；旧客户端随引用消失由 GC 回收其
+    socket，prefork 进程内不存在跨任务并发，不会堆积。
+
+    刻意不做的优化：按「当前循环 id」做二级缓存。CPython 会复用已释放对象
+    的内存地址，新循环完全可能拿到旧循环的 id——用 id 当键会让已关闭循环
+    的客户端被误判为可用，那是比现在更难排查的 bug。
+    """
+    _ADAPTER_CACHE.clear()
+
+
 def get_configured_providers() -> list[ProviderName]:
     """按主备顺序返回已配置 Key 的供应商。未配置的直接跳过，不参与降级链。"""
     ordered: list[ProviderName] = []

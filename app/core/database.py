@@ -14,7 +14,8 @@ Alembic 取代，不再需要。
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
@@ -80,8 +81,18 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_sync_db() -> Generator[Session, None, None]:
-    """Celery 任务用的同步会话上下文。"""
+@contextmanager
+def get_sync_db() -> Iterator[Session]:
+    """Celery 任务用的同步会话上下文管理器。
+
+    **必须是 context manager 而非裸生成器**：调用方一律写
+    ``with get_sync_db() as session:``，普通生成器函数返回的 generator
+    不支持上下文协议，worker 任务会在第一步就抛
+    ``TypeError: 'generator' object does not support the context manager
+    protocol``（实测向量化任务正是这样整批失败、状态永远停在 pending）。
+    用 @contextmanager 包装后即支持 with，session_factory 的 with 仍负责
+    退出时关闭会话。
+    """
     with sync_session_factory() as session:
         yield session
 

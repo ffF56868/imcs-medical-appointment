@@ -132,7 +132,15 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
 
     注意：不要在已经运行着事件循环的上下文里调用（如 FastAPI 路由内），
     那会抛 RuntimeError。路由内应直接 await 异步 service。
+
+    **为什么每次先清适配器缓存**：``AsyncOpenAI`` 的 httpx 连接池绑定首次
+    使用的事件循环，而这里每个任务新建一个循环。不清缓存的话，同一 worker
+    进程里的第二个 LLM/embedding 任务会复用属于已关闭循环的连接。
+    详见 ``provider.reset_adapter_clients`` 的说明。
     """
+    from app.services.llm.provider import reset_adapter_clients
+
+    reset_adapter_clients()
     return asyncio.run(coro)
 
 
