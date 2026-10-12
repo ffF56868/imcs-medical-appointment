@@ -20,6 +20,8 @@ import json
 import uuid
 from datetime import datetime
 
+from app.core.config import settings
+
 from sqlalchemy import (
     DateTime,
     ForeignKey,
@@ -186,8 +188,10 @@ class VectorEmbedding(Base):
         ForeignKey("knowledge_chunks.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    # 维度由 settings.embedding_dim 决定，在 Alembic 迁移中写死具体维度
-    embedding = mapped_column(VectorType(1536), nullable=False)
+    # 维度跟随 settings.embedding_dim：OpenAI text-embedding-3-small 是 1536，
+    # DashScope text-embedding-v3 是 1024。换 embedding 模型必须同步改
+    # EMBEDDING_DIM 并跑 0002 式的全列重建（不同维度连类型都不兼容）。
+    embedding = mapped_column(VectorType(settings.embedding_dim), nullable=False)
     model_version: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

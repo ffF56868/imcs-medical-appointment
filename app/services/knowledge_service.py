@@ -603,8 +603,16 @@ def set_task_status_sync(
     时间戳在这里统一维护：started_at 首次进入 running 时写，completed_at 在
     终态写，duration_ms 据此算。放到调用方各写一遍必然出现「标 failed 忘了写
     completed_at」，而僵尸任务清理（reap_stale_tasks）正是依赖这两个字段判断超时。
+
+    **target == current 是进度刷新，不是状态迁移**：长任务每处理完一篇文档都要
+    更新 progress/progress_message，此时目标状态仍是 running。而转换矩阵刻意
+    不含 running→running 自环（自环会让「重复提交同一终态」这种 bug 静默通过），
+    若进度刷新也走 assert_transition，第一篇文档的刷新就会抛
+    InvalidStateTransitionError——实测向量化任务因此每轮重试只能推进一篇、
+    24 篇拖成两小时。所以同状态直接落进度字段，跨状态才校验迁移。
     """
-    task.status = assert_transition("ai_task", task.status, target)
+    if task.status != target:
+        task.status = assert_transition("ai_task", task.status, target)
 
     now = datetime.now(UTC)
     if target == AITaskStatus.RUNNING.value and task.started_at is None:

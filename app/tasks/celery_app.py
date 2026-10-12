@@ -133,15 +133,30 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
     注意：不要在已经运行着事件循环的上下文里调用（如 FastAPI 路由内），
     那会抛 RuntimeError。路由内应直接 await 异步 service。
 
-    **为什么每次先清适配器缓存**：``AsyncOpenAI`` 的 httpx 连接池绑定首次
-    使用的事件循环，而这里每个任务新建一个循环。不清缓存的话，同一 worker
-    进程里的第二个 LLM/embedding 任务会复用属于已关闭循环的连接。
-    详见 ``provider.reset_adapter_clients`` 的说明。
+    **客户端生命周期与事件循环绑定**：``AsyncOpenAI`` 的 httpx 连接池绑定首次
+    使用时的事件循环，而这里每个任务新建并关闭一个循环。只在任务开始前清缓存
+    是不够的——任务正常结束后缓存里仍留着「本任务循环」的客户端，循环一关，
+    GC 触发 aclose() 被调度到已关闭循环上，刷出成片
+    ``Task exception was never retrieved: Event loop is closed``（worker 日志
+    实测）。正确姿势是**在同一个活循环内**收尾：协程跑完（无论成败）先
+    ``aclose_adapter_clients`` 显式关闭本任务的客户端、消费掉 finalizer，
+    然后 asyncio.run 再关循环。开头的 reset 保留，兜「上个任务崩溃没走到
+    finally」的脏缓存。
     """
-    from app.services.llm.provider import reset_adapter_clients
+    from app.services.llm.provider import (
+        aclose_adapter_clients,
+        reset_adapter_clients,
+    )
 
     reset_adapter_clients()
-    return asyncio.run(coro)
+
+    async def _managed() -> T:
+        try:
+            return await coro
+        finally:
+            await aclose_adapter_clients()
+
+    return asyncio.run(_managed())
 
 
 def dispatch_task(

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -27,6 +28,8 @@ from app.services.llm.types import (
     StreamChunk,
     TokenUsage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # 场景 -> 供应商侧模型名。DashScope 与 OpenAI 的模型命名完全不同，
@@ -311,22 +314,25 @@ class DashScopeAdapter(OpenAIAdapter):
     name = ProviderName.DASHSCOPE
 
     # DashScope 模型名与 OpenAI 完全不同，需要独立映射表。
-    # qwen-plus 对标 gpt-4.1，qwen-turbo 对标 gpt-4.1-mini。
+    # 模型名以「账号实际开通」为准：本项目百炼账号未开通 qwen-turbo
+    # （实测 404 model_not_found），qwen-plus 可用——列表接口探测确认后
+    # 全部场景统一映射到 qwen-plus；日后开通更细档位再把 TRIAGE/CHAT 降回
+    # flash 系省钱（分诊是最高频场景，对单价最敏感）。
     model_map = {
-        LLMScenario.CHAT: "qwen-turbo",
-        LLMScenario.TRIAGE: "qwen-turbo",
+        LLMScenario.CHAT: "qwen-plus",
+        LLMScenario.TRIAGE: "qwen-plus",
         LLMScenario.REPORT_INTERPRET: "qwen-plus",
-        LLMScenario.SUMMARY: "qwen-turbo",
-        LLMScenario.MODERATION: "qwen-turbo",
-        LLMScenario.QUERY_REWRITE: "qwen-turbo",
+        LLMScenario.SUMMARY: "qwen-plus",
+        LLMScenario.MODERATION: "qwen-plus",
+        LLMScenario.QUERY_REWRITE: "qwen-plus",
     }
     fallback_model_map = {
-        LLMScenario.CHAT: "qwen-turbo",
-        LLMScenario.TRIAGE: "qwen-turbo",
-        LLMScenario.REPORT_INTERPRET: "qwen-turbo",
-        LLMScenario.SUMMARY: "qwen-turbo",
-        LLMScenario.MODERATION: "qwen-turbo",
-        LLMScenario.QUERY_REWRITE: "qwen-turbo",
+        LLMScenario.CHAT: "qwen-plus",
+        LLMScenario.TRIAGE: "qwen-plus",
+        LLMScenario.REPORT_INTERPRET: "qwen-plus",
+        LLMScenario.SUMMARY: "qwen-plus",
+        LLMScenario.MODERATION: "qwen-plus",
+        LLMScenario.QUERY_REWRITE: "qwen-plus",
     }
 
     @property
@@ -339,9 +345,10 @@ class DashScopeAdapter(OpenAIAdapter):
 
     @property
     def embedding_model(self) -> str:
-        # text-embedding-v3 输出 1024 维，与 OpenAI text-embedding-3-small 的
-        # 1536 维不同。切换供应商的 embedding 必须同步改向量列定义并全量重建，
-        # 因此默认仍用 OpenAI 的 embedding 模型名占位，由配置显式指定。
+        # 当前环境以百炼为主供应商：text-embedding-v3 输出 1024 维
+        # （OpenAI text-embedding-3-small 是 1536 维）。EMBEDDING_MODEL 与
+        # EMBEDDING_DIM 两个配置必须成对切换，且换维度要跑迁移重建向量列
+        # （0002_vector_dim_dashscope）——不同维度的向量不可共存。
         return settings.embedding_model
 
 
@@ -368,16 +375,39 @@ def reset_adapter_clients() -> None:
     连接池里躺着属于上一个已关闭循环的连接，调用会抛
     ``RuntimeError: Event loop is closed``（或更隐蔽的跨循环挂起）。
 
-    所以 ``celery_app.run_async()`` 在每个任务开始前调用本函数丢弃缓存，
-    让任务在自己的循环里重建客户端。代价是每次重建连接池（几十毫秒），
-    相对 LLM 调用的秒级耗时可以忽略；旧客户端随引用消失由 GC 回收其
-    socket，prefork 进程内不存在跨任务并发，不会堆积。
+    所以 ``celery_app.run_async()`` 在每个任务开始前调用丢弃缓存，
+    让任务在自己的循环里重建客户端。注意**只 clear 引用不够**：
+    旧客户端失去引用后由 GC 调 ``__del__``，而它内部会把 ``aclose()``
+    协程调度回**自己绑定的那个已关闭循环**，刷出成片
+    ``Task exception was never retrieved ... Event loop is closed``。
+    真正的释放走 ``aclose_adapter_clients``（在活循环里显式 close）。
 
     刻意不做的优化：按「当前循环 id」做二级缓存。CPython 会复用已释放对象
     的内存地址，新循环完全可能拿到旧循环的 id——用 id 当键会让已关闭循环
     的客户端被误判为可用，那是比现在更难排查的 bug。
     """
     _ADAPTER_CACHE.clear()
+
+
+async def aclose_adapter_clients() -> None:
+    """在**当前存活的事件循环里**关闭并清空所有缓存适配器。
+
+    worker 的 run_async 会在每个任务开头调用本函数（此刻循环是活的）：
+    先 await 关闭上一任务遗留的 httpx 客户端，再清空缓存。显式关闭会
+    消费掉客户端的 finalizer，GC 之后不再向已关闭循环调度 aclose——
+    ``Event loop is closed`` 刷屏由此根除。关闭失败不致命（连接本就该
+    随旧循环废弃），逐个吞掉异常继续，绝不因清理失败阻断新任务。
+    """
+    adapters = list(_ADAPTER_CACHE.values())
+    _ADAPTER_CACHE.clear()
+    for adapter in adapters:
+        client = getattr(adapter, "_client", None)
+        if client is None:
+            continue
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001 - 跨循环残留连接关闭失败可忽略
+            logger.debug("适配器客户端关闭失败（随旧循环废弃，忽略）", exc_info=True)
 
 
 def get_configured_providers() -> list[ProviderName]:
@@ -401,4 +431,6 @@ __all__ = [
     "DashScopeAdapter",
     "get_adapter",
     "get_configured_providers",
+    "aclose_adapter_clients",
+    "reset_adapter_clients",
 ]
