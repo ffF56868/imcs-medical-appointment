@@ -53,7 +53,262 @@ def interpret_exam_report(self, report_id: str, ai_task_id: str) -> dict:
     AI 解读是辅助而非必需路径。这是医疗 AI 的基本设计原则。
     """
     logger.info("报告解读任务启动 report_id=%s ai_task_id=%s", report_id, ai_task_id)
-    raise NotImplementedError("阶段 4 实现：接诊、检查与 AI 报告解读")
+
+    from celery.exceptions import Retry, SoftTimeLimitExceeded
+
+    from app.core.database import get_sync_db
+    from app.models.ai import AITaskStatus
+    from app.services import exam_service as es
+    from app.services import knowledge_service as ks
+
+    report_uuid = _parse_id(report_id)
+    task_uuid = _parse_id(ai_task_id) if ai_task_id else None
+
+    with get_sync_db() as sync_session:
+        # ---------- 幂等闸门 ----------
+        # acks_late 下消息可能被重投。已 completed 直接返回：既省一次真金白银的
+        # LLM 配额，也避免两次回写交错覆盖 ai_* 字段（A 轮的 summary 配 B 轮的
+        # confidence 是自相矛盾的读数，比没有解读更糟）。
+        claim = es.claim_for_interpret(sync_session, report_uuid)
+        if not claim.claimed:
+            logger.info(
+                "报告解读跳过重复消费 report_id=%s reason=%s ai_status=%s",
+                report_uuid,
+                claim.reason,
+                claim.ai_status,
+            )
+            return {
+                "report_id": str(report_uuid),
+                "ai_task_id": str(task_uuid) if task_uuid else None,
+                "status": claim.reason,
+                "idempotent_hit": True,
+            }
+
+        task = (
+            ks.load_task_for_update_sync(sync_session, task_uuid)
+            if task_uuid is not None
+            else None
+        )
+        if task is not None and task.status in (
+            AITaskStatus.CANCELLED.value,
+            AITaskStatus.COMPLETED.value,
+        ):
+            # 终态任务不能被重投的消息复活：管理员叫停的解读在这里继续跑，
+            # 等于绕过了一次人工决策。把报告退回 pending 交还人工判断。
+            logger.info("任务 %s 已处于 %s，不执行", task.id, task.status)
+            _release_claim(sync_session, report_uuid)
+            return {"ai_task_id": str(task.id), "status": task.status}
+
+        if task is not None:
+            # failed 先回 pending 再进 running：转换矩阵里 failed 只有 pending
+            # 一条出边，两步都走校验而不是绕过它。
+            if task.status == AITaskStatus.FAILED.value:
+                ks.set_task_status_sync(sync_session, task, AITaskStatus.PENDING.value)
+            # target==current 是进度刷新不是状态迁移（阶段 3 修的语义），
+            # 因此重投消息走到这里时即使已是 running 也不会抛错。
+            ks.set_task_status_sync(
+                sync_session,
+                task,
+                AITaskStatus.RUNNING.value,
+                progress=10,
+                progress_message="正在检索医学知识证据",
+            )
+            sync_session.commit()
+
+        try:
+            outcome = run_async(_interpret_on_async_session(report_uuid, task_uuid))
+        except SoftTimeLimitExceeded as exc:
+            # 软超时单独捕获且**不重试**：剩余几秒根本不够重跑一遍链路，
+            # 在这里 retry 只会立刻被硬超时 SIGKILL，状态永远停在 running。
+            sync_session.rollback()
+            _finish_failure(
+                sync_session, report_uuid, task_uuid, f"解读超时（软上限）：{exc}"
+            )
+            return {
+                "report_id": str(report_uuid),
+                "ai_task_id": str(task_uuid) if task_uuid else None,
+                "status": es.AI_STATUS_FAILED,
+                "error": "soft_time_limit_exceeded",
+            }
+        except Retry:
+            # self.retry 抛的是控制流异常，不是业务失败，原样交回 Celery。
+            raise
+        except Exception as exc:  # noqa: BLE001 - worker 顶层兜底
+            sync_session.rollback()
+            retried = _maybe_retry(self, sync_session, task, exc)
+            if retried is not None:
+                # 还要重试：把报告退回 pending，让下一次投递能重新通过幂等闸门。
+                # 留在 processing 的话重投消息会被判成「另一个副本在跑」而丢弃，
+                # 这次失败就永远不会有人补。
+                _release_claim(sync_session, report_uuid)
+                return retried
+            _finish_failure(sync_session, report_uuid, task_uuid, str(exc))
+            return {
+                "report_id": str(report_uuid),
+                "ai_task_id": str(task_uuid) if task_uuid else None,
+                "status": es.AI_STATUS_FAILED,
+                "error": str(exc)[:500],
+            }
+
+        # ---------- 收尾 ----------
+        result = {**es.interpret_report_payload(outcome), "done": 1, "total": 1}
+        if task is not None:
+            # 降级/校验失败/审核拦截都算「任务没产出可用结果」，AITask 标 failed：
+            # 这是运维视角（要告警、要统计成功率）；而 ExamReport.ai_status
+            # 由 interpret_async 按医疗视角写成 failed/skipped，两者口径不同但各自自洽。
+            final_status = (
+                AITaskStatus.COMPLETED.value
+                if outcome.status == es.AI_STATUS_COMPLETED
+                else AITaskStatus.FAILED.value
+            )
+            ks.set_task_status_sync(
+                sync_session,
+                task,
+                final_status,
+                result=result,
+                error_message=None if outcome.error is None else str(outcome.error)[:2000],
+                progress=100,
+                progress_message=(
+                    f"解读完成（severity={outcome.severity or '-'}，"
+                    f"证据 {outcome.evidence_count} 条）"
+                    if final_status == AITaskStatus.COMPLETED.value
+                    else f"解读未成功：{outcome.error or outcome.status}"
+                )[:200],
+            )
+            sync_session.commit()
+
+        logger.info(
+            "报告解读任务结束 report_id=%s status=%s ai_task_id=%s",
+            report_uuid,
+            outcome.status,
+            str(task_uuid) if task_uuid else None,
+        )
+        return result
+
+
+async def _interpret_on_async_session(
+    report_uuid: uuid.UUID, task_uuid: uuid.UUID | None
+):
+    """在异步会话上跑一遍解读工作流，供 ``run_async`` 驱动。
+
+    **为什么 worker 里还要开 AsyncSession**：解读主路径（RAG 检索 + structured_chat）
+    是异步栈，而 ``exam_service.interpret_async`` 与 HTTP 侧共用同一个实现体——
+    「API 触发的解读」和「worker 跑的解读」不允许出现行为分叉，那是最难查的生产 bug。
+    同步 Session 在本任务里只承担状态流转（AITask / 幂等闸门），
+    因为那部分需要在明确的事务边界上精确控制。
+
+    事件循环与客户端生命周期一律交给 ``celery_app.run_async`` 收口：
+    任务体内自己再套 asyncio.run 会撞上「嵌套事件循环」RuntimeError，
+    还会绕过它的 aclose_adapter_clients 收尾（实测刷出成片 Event loop is closed）。
+    """
+    from app.services import exam_service as es
+
+    async with async_session_factory() as session:
+        return await es.interpret_async(session, report_uuid, ai_task_id=task_uuid)
+
+
+def _release_claim(sync_session, report_uuid: uuid.UUID) -> None:
+    """把报告从 processing 退回 pending，允许后续消息重新认领。
+
+    用带状态谓词的条件 UPDATE 而不是改 ORM 对象：已经 completed 的行绝不能被
+    回退成 pending，那会把一份成功的解读抹掉。
+    """
+    from sqlalchemy import update
+
+    from app.models.clinical import ExamReport
+    from app.services import exam_service as es
+
+    try:
+        sync_session.execute(
+            update(ExamReport)
+            .where(
+                ExamReport.id == report_uuid,
+                ExamReport.ai_status == es.AI_STATUS_PROCESSING,
+            )
+            .values(ai_status=es.AI_STATUS_PENDING)
+        )
+        sync_session.commit()
+    except Exception:  # noqa: BLE001 - 兜底路径不得再抛
+        logger.warning("退回解读认领状态失败 report_id=%s", report_uuid, exc_info=True)
+
+
+def _finish_failure(sync_session, report_uuid, task_uuid, message: str) -> None:
+    """失败收尾：报告标 failed + 任务标 failed，各自独立提交。
+
+    刻意不与业务写入同事务：此刻已在异常路径上，任何一次 rollback 都可能顺带
+    撤销 failed 标记，那样前端会一直轮询到超时，而且库里没有任何地方
+    留下「它失败了」的记录，排障只能翻 worker 日志。
+    """
+    from sqlalchemy import update
+
+    from app.models.ai import AITask
+    from app.models.clinical import ExamReport
+    from app.services import exam_service as es
+    from app.services import knowledge_service as ks
+
+    try:
+        sync_session.execute(
+            update(ExamReport)
+            .where(
+                ExamReport.id == report_uuid,
+                ExamReport.ai_status.in_(
+                    (es.AI_STATUS_PENDING, es.AI_STATUS_PROCESSING)
+                ),
+            )
+            .values(ai_status=es.AI_STATUS_FAILED)
+        )
+        sync_session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("标记报告解读失败态出错 report_id=%s", report_uuid, exc_info=True)
+
+    logger.error("报告解读失败 report_id=%s error=%s", report_uuid, str(message)[:500])
+
+    if task_uuid is None:
+        return
+    task = sync_session.get(AITask, task_uuid)
+    if task is None or task.status in (
+        AITaskStatus.COMPLETED.value,
+        AITaskStatus.CANCELLED.value,
+    ):
+        return
+    try:
+        ks.set_task_status_sync(
+            sync_session,
+            task,
+            AITaskStatus.FAILED.value,
+            error_message=str(message)[:2000],
+        )
+    except Exception:  # noqa: BLE001 - 已是终态时静默接受
+        logger.debug("任务 %s 无法流转到 failed，可能已处于终态", task_uuid)
+    sync_session.commit()
+
+
+def _maybe_retry(self, sync_session, task, exc: BaseException) -> dict | None:
+    """还有重试次数就推进到 retrying 并返回 ``self.retry`` 的结果，否则返回 None。
+
+    返回 None 表示「次数耗尽，请上层标 failed」。retry 调度本身抛出的
+    ``Retry`` 在这里原样向外传，由任务体的 ``except Retry: raise`` 交回 Celery——
+    如果让它落到 ``except Exception`` 里会被当成业务失败吞掉，任务再也不重试。
+    """
+    from app.services import knowledge_service as ks
+
+    if task is None:
+        return None
+    retries_done = int(getattr(getattr(self, "request", None), "retries", 0) or 0)
+    max_retries = int(getattr(self, "max_retries", 0) or 0)
+    if retries_done >= max_retries:
+        return None
+
+    ks.set_task_status_sync(
+        sync_session,
+        task,
+        AITaskStatus.RETRYING.value,
+        error_message=f"第 {retries_done + 1} 次重试：{exc}"[:2000],
+    )
+    ks.bump_retry_count_sync(sync_session, task)
+    sync_session.commit()
+    logger.warning("报告解读失败，准备第 %d 次重试：%s", retries_done + 1, exc)
+    return self.retry(exc=exc)
 
 
 @celery_app.task(

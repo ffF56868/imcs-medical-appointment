@@ -58,7 +58,15 @@ class AITask(UUIDPrimaryKey, TimestampMixin, Base):
     )
 
     # knowledge_vectorize / report_interpret / triage / ragas_evaluate / metrics_aggregate
-    task_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    task_type: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        comment=(
+            "任务类型取值登记：triage（智能分诊）、"
+            "report_interpret（AI 报告解读）、knowledge_rebuild（知识库向量化重建）。"
+            "与 services 侧 TASK_TYPE_* 常量保持一致"
+        ),
+    )
     # 关联的业务对象 ID，如报告 ID、知识库重建批次 ID
     ref_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     # Celery 任务 ID，用于关联 Flower 里的执行详情
