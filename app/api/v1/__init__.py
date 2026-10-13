@@ -14,9 +14,12 @@ from fastapi import APIRouter
 
 from app.api.v1.appointment import router as appointment_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.billing import router as billing_router
 from app.api.v1.consult import router as consult_router
+from app.api.v1.dispensing import router as dispensing_router
 from app.api.v1.exam import router as exam_router
 from app.api.v1.knowledge import router as knowledge_router
+from app.api.v1.prescription import router as prescription_router
 from app.api.v1.schedule import router as schedule_router
 from app.api.v1.triage import router as triage_router
 
@@ -29,6 +32,9 @@ api_router.include_router(appointment_router)
 api_router.include_router(triage_router)
 api_router.include_router(consult_router)
 api_router.include_router(exam_router)
+api_router.include_router(prescription_router)
+api_router.include_router(billing_router)
+api_router.include_router(dispensing_router)
 
 
 __all__ = ["api_router"]

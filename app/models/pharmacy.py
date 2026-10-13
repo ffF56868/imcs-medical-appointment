@@ -127,14 +127,17 @@ class Prescription(UUIDPrimaryKey, TimestampMixin, Base):
 
         金额一律用 ``Decimal`` 计算再取整到分，不用 float——
         0.1 + 0.2 != 0.3 这类浮点误差在收费场景是不可接受的。
-        ``unit_price`` 存的是元，乘 100 转分，四舍五入到整分。
+        ``unit_price`` 存的是元，乘 100 转分，**逐项**四舍五入到整分。
+        取整必须发生在 quantize 这一步（quantum=1 分）：早先版本先量化到
+        0.01 分再 ``int()`` 截断，0.495 元会得到 49 分而不是 50 分，
+        与 docstring 承诺的「四舍五入到整分」不符——收费金额差一分都对不上账。
         """
-        cent = Decimal("0.01")
+        one_cent = Decimal("1")
         total = Decimal(0)
         for item in self.items:
             # 单价（元）× 数量（可含小数，如 1.5 盒）→ 元，再转分
-            amount_yuan = Decimal(item.unit_price) * Decimal(str(item.quantity))
-            total += (amount_yuan * 100).quantize(cent, rounding=ROUND_HALF_UP)
+            amount_yuan = Decimal(str(item.unit_price)) * Decimal(str(item.quantity))
+            total += (amount_yuan * 100).quantize(one_cent, rounding=ROUND_HALF_UP)
         self.total_amount = int(total)
         return self.total_amount
 

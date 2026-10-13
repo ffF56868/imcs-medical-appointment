@@ -11,8 +11,11 @@
 | --- | --- | --- |
 | 0 运行底座 | Alembic 迁移、Docker 编排、IMCS 入口、认证层、种子数据、测试 | ✅ 完成 |
 | 1 架构地基 | 24 张表模型、统一 LLM 服务层、RBAC、状态机、Celery 队列 | ✅ 完成 |
-| 2 RAG 知识底座 | pgvector + PG 全文检索 + RRF 融合、知识库向量化 | 待做 |
-| 3-6 | 分诊预约 / 接诊报告 / 处方收费发药 / AI 可观测与评测 | 待做 |
+| 2 RAG 知识底座 | pgvector + PG 全文检索 + RRF 融合、知识库向量化、知识管理接口 | ✅ 完成 |
+| 3 分诊预约 | 工作流编排引擎、智能分诊、排班号源乐观锁、预约挂号闭环 | ✅ 完成 |
+| 4 接诊报告 | 接诊病历、检查申请、报告录入、危急值、真实 AI 解读（qwen-plus） | ✅ 完成 |
+| 5 处方收费发药 | 处方与合理用药校验、收费单与退费边界、先审后发闭环 | ✅ 完成 |
+| 6 AI 可观测与评测 | 指标聚合、监控接口、trace 回放、RAGAS 迁移 | 待做 |
 | 7 前端 | Vue 3 + TypeScript + Element Plus | 待做 |
 
 ## IMCS 启动方式（阶段 0 已可运行）
@@ -36,7 +39,7 @@ docker compose -f docker-compose.imcs.yml --profile monitoring up -d
 
 环境变量：参照 `.env.example.imcs` 填写 `.env`，至少填 `OPENAI_API_KEY` 与 `DASHSCOPE_API_KEY`，并把 `IMCS_JWT_SECRET_KEY` 换成强随机值。
 
-测试：`docker compose -f docker-compose.imcs.yml exec api python -m pytest tests -p no:cacheprovider`（当前 34 个认证用例全绿）。
+测试：`bash scripts/docker-test.sh`（全量 610 个单元用例；阶段 5 端到端业务闭环可用 `python scripts/e2e_stage5.py` 对运行中的栈验证）。
 
 ---
 
