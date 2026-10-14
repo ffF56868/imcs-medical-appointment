@@ -18,6 +18,7 @@ from app.api.v1.billing import router as billing_router
 from app.api.v1.consult import router as consult_router
 from app.api.v1.dispensing import router as dispensing_router
 from app.api.v1.exam import router as exam_router
+from app.api.v1.evaluation import router as evaluation_router
 from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.monitoring import router as monitoring_router
 from app.api.v1.prescription import router as prescription_router
@@ -38,6 +39,8 @@ api_router.include_router(billing_router)
 api_router.include_router(dispensing_router)
 # 阶段 6 批次 A：AI 运行监控（指标曲线、调用明细、全链路回放、手动聚合）
 api_router.include_router(monitoring_router)
+# 阶段 6 批次 B：AI 评测（题库、检索与质量同步评测、RAGAS 异步评测）
+api_router.include_router(evaluation_router)
 
 
 __all__ = ["api_router"]

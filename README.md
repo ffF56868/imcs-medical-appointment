@@ -16,7 +16,7 @@
 | 4 接诊报告 | 接诊病历、检查申请、报告录入、危急值、真实 AI 解读（qwen-plus） | ✅ 完成 |
 | 5 处方收费发药 | 处方与合理用药校验、收费单与退费边界、先审后发闭环 | ✅ 完成 |
 | 6A AI 可观测 | trace_id 贯穿全链路、LLM/检索/工作流日志落库、分钟桶指标聚合、监控接口与按 trace_id 回放、僵尸任务清理 | ✅ 完成 |
-| 6B AI 评测 | 评测题库与运行表、检索三指标（Top1/Recall@3/Precision@3）、RAGAS 迁移 Celery | 待做 |
+| 6B AI 评测 | 评测题库与运行表、检索三指标（Top1/Recall@3/Precision@3）、回答质量断言、回归门禁、RAGAS 四指标迁移 Celery | ✅ 完成 |
 | 7 前端 | Vue 3 + TypeScript + Element Plus | 待做 |
 
 ## IMCS 启动方式（阶段 0 已可运行）
@@ -40,7 +40,7 @@ docker compose -f docker-compose.imcs.yml --profile monitoring up -d
 
 环境变量：参照 `.env.example.imcs` 填写 `.env`，至少填 `OPENAI_API_KEY` 与 `DASHSCOPE_API_KEY`，并把 `IMCS_JWT_SECRET_KEY` 换成强随机值。
 
-测试：`bash scripts/docker-test.sh`（全量 610 个单元用例；阶段 5 端到端业务闭环可用 `python scripts/e2e_stage5.py` 对运行中的栈验证）。
+测试：`bash scripts/docker-test.sh`（全量 760 个单元用例；端到端业务闭环对运行中的栈验证：`python scripts/e2e_stage5.py` 处方收费发药、`python scripts/e2e_stage6a.py` AI 可观测、`python scripts/e2e_stage6b.py` AI 评测含 RAGAS 异步链路）。
 
 ---
 

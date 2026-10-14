@@ -35,6 +35,12 @@ from app.models.knowledge import (
     KnowledgeDocument,
     VectorEmbedding,
 )
+from app.models.evaluation import (
+    EvalCase,
+    EvalKind,
+    EvalRun,
+    EvalRunStatus,
+)
 from app.models.ai import (
     AIMetric,
     AITask,
@@ -72,6 +78,10 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "VectorEmbedding",
+    "EvalCase",
+    "EvalKind",
+    "EvalRun",
+    "EvalRunStatus",
     "AIMetric",
     "AITask",
     "AITaskStatus",

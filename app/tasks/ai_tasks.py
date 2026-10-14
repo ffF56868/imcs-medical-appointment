@@ -432,9 +432,141 @@ def run_ragas_evaluation(self, eval_run_id: str) -> dict:
 
     独立队列 QUEUE_EVALUATE 且并发 1：评测是资源消耗大户，
     与在线业务任务混跑会挤占 LLM 配额，影响真实用户体验。
+
+    **双状态表分工**（沿用阶段 4 解读任务的口径）：``EvalRun`` 是业务侧
+    评测记录（pending/running/completed/failed，由 ragas_runner 内部 CAS 推进），
+    ``AITask`` 是运维侧执行单元（监控成功率、僵尸清理都看它）。这里只维护
+    AITask，EvalRun 的收尾交给 ``execute_ragas_evaluation``；失败收口时
+    两张表都标 failed，否则「AITask 失败但 EvalRun 永远 running」是最难查的错位。
+
+    **不自动重试**（max_retries=1 保留但不调用 self.retry）：一次 RAGAS 要烧
+    整轮 LLM 配额，自动重投可能重复计费；评测是人工触发的分析动作，
+    失败让管理员看到 error_message 自己决定要不要重跑，比盲目重投安全。
+    这与解读任务「失败自动重试」相反——那份单份便宜且是诊疗辅助路径，
+    用户不该为 LLM 抖动手动点重试。成本量级不同，策略就该不同。
     """
-    logger.info("RAGAS 评测任务启动 eval_run_id=%s", eval_run_id)
-    raise NotImplementedError("阶段 6 实现：评测体系迁移")
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    from app.core.database import get_sync_db
+    from app.models.ai import AITask, AITaskStatus
+    from app.models.evaluation import EvalKind, EvalRun
+    from app.services import knowledge_service as ks
+    from app.services import ragas_runner as rr
+
+    run_uuid = _parse_id(eval_run_id)
+    logger.info("RAGAS 评测任务启动 eval_run_id=%s", run_uuid)
+
+    # ---------- 运维侧状态：进入 running ----------
+    ai_task_id: str | None = None
+    with get_sync_db() as sync_session:
+        run = sync_session.get(EvalRun, run_uuid)
+        if run is None or run.kind != EvalKind.RAGAS.value:
+            raise ValueError(f"RAGAS 运行不存在或类型不符：{run_uuid}")
+        task = (
+            ks.load_task_for_update_sync(sync_session, run.ai_task_id)
+            if run.ai_task_id is not None
+            else None
+        )
+        if task is not None:
+            if task.status in (AITaskStatus.CANCELLED.value,):
+                # 管理员叫停的执行单元不能被重投的消息复活
+                logger.info("RAGAS 关联任务已取消，跳过 task_id=%s", task.id)
+                return {"eval_run_id": str(run_uuid), "status": task.status}
+            if task.status == AITaskStatus.FAILED.value:
+                ks.set_task_status_sync(sync_session, task, AITaskStatus.PENDING.value)
+            ks.set_task_status_sync(
+                sync_session,
+                task,
+                AITaskStatus.RUNNING.value,
+                progress=5,
+                progress_message="RAGAS 评测启动",
+            )
+            ai_task_id = str(task.id)
+        sync_session.commit()
+
+    try:
+        result = rr.execute_ragas_evaluation(str(run_uuid))
+    except SoftTimeLimitExceeded as exc:
+        _finish_ragas_failure(run_uuid, ai_task_id, f"评测超时（软上限）：{exc}")
+        return {
+            "eval_run_id": str(run_uuid),
+            "ai_task_id": ai_task_id,
+            "status": "failed",
+            "error": "soft_time_limit_exceeded",
+        }
+    except Exception as exc:  # noqa: BLE001 - worker 顶层兜底
+        logger.exception("RAGAS 评测失败 run_id=%s", run_uuid)
+        _finish_ragas_failure(run_uuid, ai_task_id, str(exc))
+        return {
+            "eval_run_id": str(run_uuid),
+            "ai_task_id": ai_task_id,
+            "status": "failed",
+            "error": str(exc)[:500],
+        }
+
+    # ---------- 成功收尾：AITask 终态 ----------
+    if ai_task_id is not None:
+        with get_sync_db() as sync_session:
+            task = sync_session.get(AITask, _parse_id(ai_task_id))
+            if task is not None and task.status not in (
+                AITaskStatus.COMPLETED.value,
+                AITaskStatus.CANCELLED.value,
+            ):
+                ks.set_task_status_sync(
+                    sync_session,
+                    task,
+                    AITaskStatus.COMPLETED.value,
+                    result={
+                        "averages": result.get("averages"),
+                        "completed_count": result.get("completed_count"),
+                    },
+                    progress=100,
+                    progress_message="RAGAS 评测完成",
+                )
+                sync_session.commit()
+
+    logger.info("RAGAS 评测任务结束 run_id=%s ok=%s", run_uuid, result.get("ok"))
+    return {**result, "eval_run_id": str(run_uuid), "ai_task_id": ai_task_id}
+
+
+def _finish_ragas_failure(
+    run_uuid: uuid.UUID, ai_task_id: str | None, message: str
+) -> None:
+    """把 EvalRun 与 AITask 同时收口为 failed，避免双表状态错位。
+
+    两张表都要标：只标 AITask 的话业务侧永远显示 running，
+    前端轮询拿不到终态；只标 EvalRun 的话运维视角漏掉一次失败。
+    全程吞异常——这是失败路径的兜底，再抛就没人能看清原始错误了。
+    """
+    from datetime import UTC, datetime
+
+    from app.core.database import get_sync_db
+    from app.models.ai import AITask, AITaskStatus
+    from app.models.evaluation import EvalKind, EvalRun, EvalRunStatus
+    from app.services import knowledge_service as ks
+
+    try:
+        with get_sync_db() as sync_session:
+            run = sync_session.get(EvalRun, run_uuid)
+            if run is not None and run.kind == EvalKind.RAGAS.value:
+                run.status = EvalRunStatus.FAILED.value
+                run.error_message = str(message)[:2000]
+                run.completed_at = datetime.now(UTC)
+                sync_session.add(run)
+            if ai_task_id is not None:
+                task = sync_session.get(AITask, _parse_id(ai_task_id))
+                if task is not None and task.status not in (
+                    AITaskStatus.COMPLETED.value,
+                    AITaskStatus.CANCELLED.value,
+                    AITaskStatus.FAILED.value,
+                ):
+                    ks.set_task_status_sync(
+                        sync_session, task, AITaskStatus.FAILED.value,
+                        error_message=str(message)[:2000],
+                    )
+            sync_session.commit()
+    except Exception:  # noqa: BLE001 - 已是兜底路径，不得再抛
+        logger.warning("RAGAS 失败收口异常 run_id=%s", run_uuid, exc_info=True)
 
 
 __all__ = [

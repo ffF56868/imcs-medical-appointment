@@ -77,6 +77,10 @@ celery_app.conf.update(
         "app.tasks.knowledge_tasks.*": {"queue": QUEUE_VECTORIZE},
         "app.tasks.ai_tasks.interpret_exam_report": {"queue": QUEUE_INTERPRET},
         "app.tasks.ai_tasks.run_triage_workflow": {"queue": QUEUE_INTERPRET},
+        # RAGAS 显式路由：它必须落在 evaluate 队列（专用 worker 并发 1），
+        # 排在 ai_tasks.* 通配兜底之前——路由字典按声明顺序取首个匹配，
+        # 少了这行就会被通配吞进 default 队列，和在线业务挤同一个 worker。
+        "app.tasks.ai_tasks.run_ragas_evaluation": {"queue": QUEUE_EVALUATE},
         "app.tasks.ai_tasks.*": {"queue": QUEUE_DEFAULT},
         "app.tasks.monitoring_tasks.*": {"queue": QUEUE_DEFAULT},
     },

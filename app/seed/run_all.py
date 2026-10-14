@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_factory
 from app.seed.departments import seed_departments
+from app.seed.eval_cases import seed_eval_cases
 from app.seed.knowledge import seed_knowledge
 from app.seed.rbac import seed_rbac
 from app.seed.schedules import seed_schedules
@@ -55,7 +56,11 @@ async def seed_all(db: AsyncSession, *, include_schedules: bool = True) -> dict[
     #    不依赖用户，放在排班之前。
     stats["knowledge_created"] = await seed_knowledge(db)
 
-    # 5. 医生排班。依赖用户已存在，因此排在最后。
+    # 5. 评测题库。依赖知识文档已存在（题目指向的 expected_name
+    #    必须是知识库里真实存在的标题），因此排在 seed_knowledge 之后。
+    stats.update(await seed_eval_cases(db))
+
+    # 6. 医生排班。依赖用户已存在，因此排在最后。
     if include_schedules:
         stats["schedules_created"] = await seed_schedules(db)
 
