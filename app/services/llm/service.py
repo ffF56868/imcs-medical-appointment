@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
+from app.core.trace import get_trace_id, new_trace_id
 from app.services.llm.cost import calculate_cost
 from app.services.llm.degradation import DegradationChain, get_canned_text
 from app.services.llm.logger import call_logger, record_llm_call
@@ -67,6 +67,20 @@ class LLMService:
         self._moderator = moderator
         self._logger = call_logger
 
+    # ==================== 链路 ID ====================
+
+    @staticmethod
+    def _resolve_trace_id(request: LLMRequest) -> str:
+        """确定本次调用归属的 trace_id。
+
+        优先级：请求显式指定 → HTTP 中间件写入的 contextvar → 新生成。
+        中间那一级是关键：业务代码（分诊、报告解读等）大多不会手动传
+        ``trace_id``，但 LLM 日志必须能和同一次请求的检索日志、工作流追踪
+        对上号，否则事后无法按链路回放。放在这里而不是 logger 内部，是因为
+        同一个 trace_id 还要回填进 ``LLMResponse.trace_id`` 返回给调用方。
+        """
+        return request.trace_id or get_trace_id() or new_trace_id()
+
     # ==================== 非流式 ====================
 
     async def chat(self, request: LLMRequest) -> LLMResponse:
@@ -77,7 +91,7 @@ class LLMService:
         调用方只需检查 ``response.is_degraded`` 决定是否向用户披露降级。
         """
         started = time.perf_counter()
-        trace_id = request.trace_id or str(uuid.uuid4())
+        trace_id = self._resolve_trace_id(request)
 
         # ---------- 1. 输入审核 ----------
         user_text = self._extract_user_text(request.messages)
@@ -320,7 +334,7 @@ class LLMService:
         让前端展示「回答中断」而不是拼接一段不相干的兜底话术。
         """
         started = time.perf_counter()
-        trace_id = request.trace_id or str(uuid.uuid4())
+        trace_id = self._resolve_trace_id(request)
 
         # 输入审核：流式同样要做，且在建立连接前做，成本最低
         user_text = self._extract_user_text(request.messages)
@@ -649,6 +663,12 @@ class LLMService:
         """
         if not texts:
             return [], TokenUsage()
+
+        # embedding 多由 Celery 任务发起，调用方通常不传 trace_id；这里回退读
+        # contextvar，让检索入库的向量调用也能并回触发它的那次业务请求。
+        # 不在 embed 内新造 ID：Celery 侧没有中间件，凭空造一个只会产生
+        # 一条和任何请求都对不上的孤立链路，宁可为空。
+        trace_id = trace_id or get_trace_id()
 
         providers = get_configured_providers()
         if not providers:

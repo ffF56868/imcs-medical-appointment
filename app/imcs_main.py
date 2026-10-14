@@ -25,6 +25,9 @@ from app.core.cache import check_redis, close_redis
 from app.core.config import settings
 from app.core.database import async_session_factory, dispose_async_engine, dispose_sync_engine
 from app.core.exceptions import register_exception_handlers
+from app.core.trace import TRACE_HEADER, get_trace_id
+from app.core.trace_middleware import TraceIdMiddleware
+from app.services.llm.logger import call_logger
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +51,25 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     关闭时释放两个引擎：Celery worker 与本进程可能同容器部署，
     只关异步引擎会漏掉同步连接池，滚动重启时留下连接堆积。
+
+    LLM 调用日志缓冲区的生命周期也挂在这里：``call_logger`` 采用
+    「攒够批量或到点才刷盘」的策略，**必须显式 start() 才会有定时刷盘任务**。
+    没接 lifespan 的后果是低频场景下日志长期滞留在内存里不落库；
+    而关闭时不 stop()，最后一段未攒满批次的日志会随进程一起消失。
+    start/stop 都包了 try/except —— 可观测性组件故障不允许阻断应用启停。
     """
     logger.info("%s v%s 启动，environment=%s", settings.app_name, settings.app_version, settings.environment)
+    try:
+        call_logger.start()
+    except Exception:  # noqa: BLE001 - 刷盘任务起不来也不能阻止服务启动
+        logger.warning("LLM 调用日志定时刷盘任务启动失败，日志将仅在攒满批次时落库", exc_info=True)
     yield
+    # 必须放在 dispose_async_engine 之前：stop() 要用异步 session 把尾部日志刷进库，
+    # 引擎一旦释放就再也写不进去，这批日志直接丢。
+    try:
+        await call_logger.stop()
+    except Exception:  # noqa: BLE001 - 关闭阶段不能因日志落库失败而中断资源释放
+        logger.warning("LLM 调用日志刷盘收尾失败", exc_info=True)
     await close_redis()
     await dispose_async_engine()
     dispose_sync_engine()
@@ -89,14 +108,29 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
     解析 detail 会直接崩。这里补齐同构响应，同时**不回显异常原文**，
     避免 SQL 片段或文件路径经错误信息泄漏给客户端。真实堆栈只进服务端日志。
     """
-    logger.exception("未处理异常 %s：%s %s", type(exc).__name__, request.method, request.url.path)
+    logger.exception(
+        "未处理异常 %s：%s %s（trace=%s）",
+        type(exc).__name__,
+        request.method,
+        request.url.path,
+        get_trace_id(),
+    )
     return JSONResponse(
         status_code=500,
         content={"detail": {"code": "internal_error", "message": "服务器内部错误，请稍后重试"}},
+        # 兜底处理器返回的响应不经过任何中间件包装层，这里手动补 trace 头：
+        # 客户端拿到 500 时能直接把 trace_id 报给研发，按 ID 回放整条链路。
+        headers={TRACE_HEADER: get_trace_id()} if get_trace_id() else None,
     )
 
 
 # ---------- 中间件 ----------
+# trace 中间件最后 add_middleware，因此在栈最外层最先执行：Starlette 的
+# 中间件是「后添加者先执行」。只有它先跑，后续的安全头中间件、CORS、业务路由
+# 以及兜底异常处理器派生的日志与 LLM 调用，才能从 contextvar 读到同一个 trace_id。
+# 反过来若放在内层，最需要追踪的失败请求（在外层就抛异常的那些）反而会缺链路 ID。
+app.add_middleware(TraceIdMiddleware)
+
 # CORS 必须在安全头中间件之前 add_middleware：Starlette 的中间件栈是
 # 后添加者先执行，而预检请求（OPTIONS）不经过业务逻辑，需要 CORS 尽早应答。
 app.add_middleware(
@@ -106,7 +140,9 @@ app.add_middleware(
     # 开启 allow_credentials 会把 Origin 反射进响应头，扩大 CSRF 面
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+    # X-Trace-Id 必须显式放行：浏览器跨域时自定义头不在 CORS safelist 里，
+    # 不加的话前端自带的链路 ID 会在预检阶段被拦掉，链路在网关处断头。
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id", "X-Trace-Id"],
 )
 
 

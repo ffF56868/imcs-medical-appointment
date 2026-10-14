@@ -19,6 +19,7 @@ from app.api.v1.consult import router as consult_router
 from app.api.v1.dispensing import router as dispensing_router
 from app.api.v1.exam import router as exam_router
 from app.api.v1.knowledge import router as knowledge_router
+from app.api.v1.monitoring import router as monitoring_router
 from app.api.v1.prescription import router as prescription_router
 from app.api.v1.schedule import router as schedule_router
 from app.api.v1.triage import router as triage_router
@@ -35,6 +36,8 @@ api_router.include_router(exam_router)
 api_router.include_router(prescription_router)
 api_router.include_router(billing_router)
 api_router.include_router(dispensing_router)
+# 阶段 6 批次 A：AI 运行监控（指标曲线、调用明细、全链路回放、手动聚合）
+api_router.include_router(monitoring_router)
 
 
 __all__ = ["api_router"]

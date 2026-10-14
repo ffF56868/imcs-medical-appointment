@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -62,12 +63,25 @@ from app.models.clinical import (
 from app.models.patient import PatientProfile
 from app.services.llm.service import get_llm_service
 from app.services.llm.types import ChatMessage, LLMRequest, LLMScenario
+from app.services.observability import (
+    build_step,
+    finish_workflow_trace_sync,
+    start_workflow_trace,
+    sum_usage,
+)
 from app.services.rag.retriever import RAGRetriever
 from app.services.state_machine import assert_transition
 
 logger = logging.getLogger(__name__)
 
 # ==================== 常量 ====================
+
+# workflow_traces.workflow_name 取值（models/ai.py 注释登记的三种之一）。
+# 字面量与 AITask.task_type 常量 TASK_TYPE_REPORT_INTERPRET 相同，但刻意分列：
+# 一个是追踪口径、一个是任务路由口径，改一个不该顺手动另一个。
+WORKFLOW_NAME_REPORT_INTERPRET = "report_interpret"
+# 解读工作流的计划节点数：规则判定 / 证据召回 / prompt 组装 / LLM 调用 / 结果回写。
+REPORT_INTERPRET_NODE_COUNT = 5
 
 # AITask.task_type 取值。models/ai.py 注释里登记的正是这个字符串，
 # 派发侧与 worker 侧必须共用常量，否则按 task_type 查重的索引语义会失效。
@@ -1537,13 +1551,65 @@ def run_interpretation_sync(
     items = _coerce_items(report.structured_data)
 
     trace_id = trace_id or uuid.uuid4().hex
+
+    # ---------- 工作流追踪：入口 ----------
+    # **只加追踪，不动 CAS 认领**：claim_for_interpret 的 pending→processing 幂等语义
+    # 由调用方（Celery 任务体）在进入本函数之前完成，本函数不碰 ai_status 的判定；
+    # 追踪记录写在独立会话上，不参与业务事务，因此也不会影响 rowcount 的可信度。
+    # start_workflow_trace 是异步函数且内部自开 async_session_factory：此处已确认
+    # 无活循环（上面的契约前置），用 asyncio.run 桥接一次，符合项目 worker 侧约定。
+    trace_row_id: int | None = None
+    try:
+        trace_row_id = asyncio.run(
+            start_workflow_trace(
+                trace_id,
+                WORKFLOW_NAME_REPORT_INTERPRET,
+                user_id=report.patient_id,
+                ref_id=report.id,
+                node_count=REPORT_INTERPRET_NODE_COUNT,
+            )
+        )
+    except Exception:  # noqa: BLE001 - 追踪失败不得影响解读
+        logger.warning("创建报告解读工作流追踪失败", exc_info=True)
+    wf_steps: list[dict[str, Any]] = []
+    wf_start = time.perf_counter()
+
+    step_start = time.perf_counter()
+    abnormalities = evaluate_abnormalities(report.structured_data)
+    critical_hits = detect_critical_values(report.structured_data)
+    items = _coerce_items(report.structured_data)
+    wf_steps.append(
+        build_step(
+            "rule_evaluation",
+            "rule",
+            latency_ms=int((time.perf_counter() - step_start) * 1000),
+            output_snapshot={
+                "abnormal_count": len(abnormalities),
+                "critical_count": len(critical_hits),
+                "item_count": len(items),
+                "critical_codes": [h.code for h in critical_hits[:5]],
+            },
+        )
+    )
+
     query = build_retrieval_query(abnormalities, critical_hits)
+    step_start = time.perf_counter()
     if evidence_fn is not None:
         evidence = list(evidence_fn(query, trace_id) or [])
     else:
         evidence = []
         logger.info("worker 侧未注入证据检索函数，本次解读不带知识库证据")
+    wf_steps.append(
+        build_step(
+            "evidence_retrieval",
+            "retrieval",
+            latency_ms=int((time.perf_counter() - step_start) * 1000),
+            input_snapshot=query,
+            output_snapshot={"evidence_count": len(evidence)},
+        )
+    )
 
+    step_start = time.perf_counter()
     prompt = _build_prompt(
         exam_name=req.exam_name,
         profile=profile,
@@ -1566,6 +1632,7 @@ def run_interpretation_sync(
 
     service = llm_service if llm_service is not None else get_llm_service()
 
+    step_start = time.perf_counter()
     try:
         parsed, response = _call_structured_chat(service, request)
     except Exception as exc:  # noqa: BLE001
@@ -1579,9 +1646,45 @@ def run_interpretation_sync(
         )
         _apply_ai_fields(report, outcome)
         session.commit()
+        wf_steps.append(
+            build_step(
+                "llm_interpret",
+                "llm",
+                latency_ms=int((time.perf_counter() - step_start) * 1000),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        )
+        # 异常出口同样要收尾，否则这条 trace 永远停在 running，看板上表现为
+        # 「无限多的进行中工作流」——这是最难发现的监控失真。
+        _finish_report_trace_sync(
+            trace_row_id,
+            trace_id,
+            wf_steps,
+            wf_start,
+            status=AI_STATUS_FAILED,
+            branch_taken="llm_exception",
+            outcome=outcome,
+            responses=[],
+            error_message=outcome.error,
+        )
         return outcome
 
     latency_ms = int((utcnow_zoned() - started).total_seconds() * 1000)
+
+    wf_steps.append(
+        build_step(
+            "llm_interpret",
+            "llm",
+            latency_ms=int((time.perf_counter() - step_start) * 1000),
+            input_snapshot={"prompt_chars": len(prompt), "evidence_count": len(evidence)},
+            output_snapshot={
+                "model": getattr(response, "model", None),
+                "provider": getattr(response, "provider", None),
+                "parsed_ok": parsed is not None,
+                "moderation_blocked": bool(getattr(response, "moderation_blocked", False)),
+            },
+        )
+    )
 
     if getattr(response, "moderation_blocked", False):
         outcome = InterpretOutcome(
@@ -1647,6 +1750,33 @@ def run_interpretation_sync(
         )
     session.commit()
 
+    wf_steps.append(
+        build_step(
+            "write_back",
+            "db_write",
+            latency_ms=0,
+            output_snapshot={
+                "ai_status": outcome.status,
+                "request_status": req.status,
+                "severity": outcome.severity,
+            },
+        )
+    )
+    # 工作流追踪：出口。status 直接沿用 ai_status（completed/failed/skipped 三态
+    # 与 workflow_traces.status 语义天然对齐），branch_taken 记录走了哪个判定分支，
+    # 让「审核拦截 / 校验失败 / 降级 / 正常」四种结局在看板上可分别统计。
+    _finish_report_trace_sync(
+        trace_row_id,
+        trace_id,
+        wf_steps,
+        wf_start,
+        status=outcome.status,
+        branch_taken=_interpret_branch(outcome, response),
+        outcome=outcome,
+        responses=[response],
+        error_message=outcome.error,
+    )
+
     logger.info(
         "worker 报告解读结束 report_id=%s status=%s evidence=%d",
         report.id,
@@ -1654,6 +1784,61 @@ def run_interpretation_sync(
         len(evidence),
     )
     return outcome
+
+
+def _interpret_branch(outcome: InterpretOutcome, response: Any) -> str:
+    """把解读结局归一成 branch_taken 标识（String(40) 内）。"""
+    if getattr(response, "moderation_blocked", False):
+        return "moderation_blocked"
+    if outcome.status == AI_STATUS_COMPLETED:
+        return "interpreted"
+    if outcome.status == AI_STATUS_SKIPPED:
+        return "skipped"
+    return "failed"
+
+
+def _finish_report_trace_sync(
+    trace_row_id: int | None,
+    trace_id: str,
+    steps: list[dict[str, Any]],
+    wf_start: float,
+    *,
+    status: str,
+    branch_taken: str,
+    outcome: InterpretOutcome,
+    responses: Sequence[Any],
+    error_message: str | None,
+) -> None:
+    """报告解读工作流的收尾写入（同步封装 + 外层再兜一层异常）。
+
+    **绝不破坏 CAS 幂等**：本函数只写 workflow_traces，不读也不改 ExamReport.ai_status，
+    且跑在 observability 自己的独立会话上——阶段 4 那套 pending→processing→终态的
+    rowcount 判定完全不受影响。定位优先用 start 返回的主键 id，拿不到时退化为
+    trace_id（重复投递会留下多条 running，收尾语义是「写到最新一条」）。
+    """
+    try:
+        total_tokens, total_cost_usd = sum_usage(responses)
+        finish_workflow_trace_sync(
+            trace_row_id if trace_row_id is not None else trace_id,
+            status=status,
+            steps=steps,
+            total_latency_ms=int((time.perf_counter() - wf_start) * 1000),
+            total_tokens=total_tokens,
+            total_cost_usd=total_cost_usd if total_cost_usd else None,
+            branch_taken=branch_taken,
+            final_output={
+                "report_id": str(outcome.report_id),
+                "ai_status": outcome.status,
+                "severity": outcome.severity,
+                "confidence": outcome.confidence,
+                "evidence_count": outcome.evidence_count,
+                "model": outcome.model,
+                "latency_ms": outcome.latency_ms,
+            },
+            error_message=error_message,
+        )
+    except Exception:  # noqa: BLE001 - 追踪失败不得影响解读结果返回
+        logger.warning("收尾报告解读工作流追踪失败", exc_info=True)
 
 
 def _call_structured_chat(

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,9 +38,25 @@ from app.models.auth import Department
 from app.models.patient import PatientProfile
 from app.services.llm.service import get_llm_service
 from app.services.llm.types import ChatMessage, LLMRequest, LLMScenario
+from app.services.observability import (
+    build_step,
+    finish_workflow_trace,
+    start_workflow_trace,
+    sum_usage,
+)
 from app.services.rag.retriever import RAGRetriever
 
 logger = logging.getLogger(__name__)
+
+# workflow_traces.workflow_name 取值（models/ai.py 注释登记的三种之一）。
+WORKFLOW_NAME = "triage"
+# 急症分支标识：这条分支零 LLM 调用，必须与 AI/规则分支分开统计。
+BRANCH_EMERGENCY = "emergency"
+
+
+def _ms(since: float) -> int:
+    """自 ``time.perf_counter()`` 起点以来的毫秒数。"""
+    return int((time.perf_counter() - since) * 1000)
 
 # ==================== 急症关键词 ====================
 
@@ -250,7 +267,25 @@ def _rule_decide(
 async def _extract_symptoms(
     chief_complaint: str, *, trace_id: str | None, user_id: uuid.UUID | None
 ) -> tuple[SymptomExtract | None, str | None, bool]:
-    """第 1 步：结构化症状提取。返回 (结果, 模型名, 是否降级)。"""
+    """第 1 步（对外契约）：返回 (结果, 模型名, 是否降级)。
+
+    刻意保持三元组：现有调用点与测试桩都按它解包，改成四元组会让所有桩集体失配。
+    需要 LLMResponse 的追踪路径请直接调 ``_extract_symptoms_traced``。
+    """
+    parsed, model_name, degraded, _response = await _extract_symptoms_traced(
+        chief_complaint, trace_id=trace_id, user_id=user_id
+    )
+    return parsed, model_name, degraded
+
+
+async def _extract_symptoms_traced(
+    chief_complaint: str, *, trace_id: str | None, user_id: uuid.UUID | None
+) -> tuple[SymptomExtract | None, str | None, bool, Any]:
+    """提取节点实现体，额外返回 LLMResponse 供工作流追踪取 token/成本。
+
+    token 与 cost_usd 只挂在响应对象上，不透出来 workflow_traces.total_tokens
+    就只能是占位的 0。
+    """
     service = get_llm_service()
     request = LLMRequest(
         scenario=LLMScenario.TRIAGE,
@@ -272,10 +307,10 @@ async def _extract_symptoms(
         parsed, response = await service.structured_chat(request, SymptomExtract)
     except Exception as exc:  # noqa: BLE001 - 分诊主路径不允许模型故障中断
         logger.warning("分诊症状提取异常，转规则兜底：%s", exc)
-        return None, None, True
+        return None, None, True, None
     if parsed is None:
-        return None, response.model, True
-    return parsed, response.model, response.is_degraded
+        return None, response.model, True, response
+    return parsed, response.model, response.is_degraded, response
 
 
 async def _ask_department(
@@ -286,10 +321,25 @@ async def _ask_department(
     trace_id: str | None,
     user_id: uuid.UUID | None,
 ) -> tuple[str | None, str | None, str | None, bool]:
+    """科室推荐节点对外契约（四元组），保持既有调用方与桩不变。"""
+    name, reason, model_name, degraded, _response = await _ask_department_traced(
+        extract, chief_complaint, departments, trace_id=trace_id, user_id=user_id
+    )
+    return name, reason, model_name, degraded
+
+
+async def _ask_department_traced(
+    extract: SymptomExtract,
+    chief_complaint: str,
+    departments: list[Department],
+    *,
+    trace_id: str | None,
+    user_id: uuid.UUID | None,
+) -> tuple[str | None, str | None, str | None, bool, Any]:
     """第 3 步（AI 路）：让模型在候选科室里做选择。
 
-    返回 (科室名, 理由, 模型名, 是否降级)。科室名可能不在列表里（幻觉），
-    由调用方验证后回落规则路——模型只建议，规则做合法性校验，
+    返回 (科室名, 理由, 模型名, 是否降级, LLMResponse)。科室名可能不在列表里
+    （幻觉），由调用方验证后回落规则路——模型只建议，规则做合法性校验，
     这是「AI 输出进业务前必须过结构关」的落地形态。
     """
 
@@ -322,10 +372,10 @@ async def _ask_department(
         parsed, response = await service.structured_chat(request, DepartmentChoice)
     except Exception as exc:  # noqa: BLE001
         logger.warning("分诊科室推荐异常，转规则兜底：%s", exc)
-        return None, None, None, True
+        return None, None, None, True, None
     if parsed is None:
-        return None, None, response.model, True
-    return parsed.department_name, parsed.reason, response.model, response.is_degraded
+        return None, None, response.model, True, response
+    return parsed.department_name, parsed.reason, response.model, response.is_degraded, response
 
 
 async def _gather_evidence(
@@ -336,13 +386,34 @@ async def _gather_evidence(
     user_id: uuid.UUID | None,
 ) -> list[EvidenceItem]:
     """第 2 步：RAG 证据召回。任何失败都吞掉返回空列表。"""
+    items, _raw_count = await _gather_evidence_with_count(
+        db, query_text, trace_id=trace_id, user_id=user_id
+    )
+    return items
+
+
+async def _gather_evidence_with_count(
+    db: AsyncSession,
+    query_text: str,
+    *,
+    trace_id: str | None,
+    user_id: uuid.UUID | None,
+) -> tuple[list[EvidenceItem], int]:
+    """证据召回的实现体，额外返回「原始召回条数」。
+
+    拆成两个函数的原因：``_gather_evidence`` 的「返回 list」签名是既有契约
+    （路由与测试都在打桩它），改成元组会让所有桩集体失配。工作流追踪需要知道
+    知识库实际召回了多少，而前端只展示前 rag_result_count 条——只记展示数就分不清
+    「没召回到」和「召回很多但被截断」，这两种形态的调优动作完全不同。
+    """
     try:
         response = await RAGRetriever().retrieve(
             db, query_text, trace_id=trace_id, user_id=user_id
         )
     except Exception as exc:  # noqa: BLE001 - 证据是加分项，故障不反噬主路径
         logger.warning("分诊 RAG 证据检索失败，按无证据处理：%s", exc)
-        return []
+        return [], 0
+    raw_count = len(response.results)
     items: list[EvidenceItem] = []
     for r in response.results[: settings.rag_result_count]:
         items.append(
@@ -354,7 +425,7 @@ async def _gather_evidence(
                 rrf_score=round(r.rrf_score, 5),
             )
         )
-    return items
+    return items, raw_count
 
 
 # ==================== 主入口 ====================
@@ -382,11 +453,68 @@ async def assess(
         规则分诊先行落库，LLM 恢复后重跑本函数覆盖结论，但 decision_source
         从 rule 升级为 ai/hybrid 并保留规则理由快照（写进 advice 前缀），
         不新增历史表：补偿是低频路径，字段级快照够用。
+
+    工作流追踪：入口建 running 记录、各出口收尾终态。追踪写入全程 best-effort
+    （见 observability 模块），本函数不会因为记日志失败而让分诊请求报错；
+    业务异常本身仍按原语义向上抛出，只在抛之前补一条 failed 收尾。
     """
     trace_id = trace_id or uuid.uuid4().hex
     text = chief_complaint.strip()
+    try:
+        return await _assess_impl(
+            db,
+            chief_complaint=text,
+            user_id=user_id,
+            patient_id=patient_id,
+            ai_task_id=ai_task_id,
+            trace_id=trace_id,
+            existing=existing,
+            rule_only=rule_only,
+        )
+    except Exception as exc:  # noqa: BLE001 - 收尾后原样重抛，不改变业务异常语义
+        logger.warning("分诊工作流异常终止 trace_id=%s", trace_id, exc_info=True)
+        await finish_workflow_trace(
+            trace_id,
+            status="failed",
+            branch_taken="error",
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+
+
+async def _assess_impl(
+    db: AsyncSession,
+    *,
+    chief_complaint: str,
+    user_id: uuid.UUID | None = None,
+    patient_id: uuid.UUID | None = None,
+    ai_task_id: uuid.UUID | None = None,
+    trace_id: str | None = None,
+    existing: TriageResult | None = None,
+    rule_only: bool = False,
+) -> TriageOutcome:
+    """分诊流程实现体（由 ``assess`` 包一层 try/except，以便可靠写出 failed 收尾）。"""
+    text = chief_complaint
+
+    # ---------- 工作流追踪：入口 ----------
+    # node_count 是「计划节点数」，按分支如实给：规则先行 2 个、完整 AI 链路 5 个；
+    # 命中急症拦截时在第 0 步就地收窄到 1。它是执行率（executed/node_count）的分母，
+    # 写死常数会让「AI 链路大面积短路」这种异常在看板上看不出来。
+    # 追踪写入全程 best-effort，失败不影响分诊。
+    planned_nodes = 2 if rule_only else 5
+    trace_row_id = await start_workflow_trace(
+        trace_id,
+        WORKFLOW_NAME,
+        user_id=user_id,
+        ref_id=patient_id,
+        node_count=planned_nodes,
+    )
+    steps: list[dict[str, Any]] = []
+    llm_responses: list[Any] = []
+    workflow_started = time.perf_counter()
 
     # ---------- 第 0 步：急症拦截 ----------
+    step_start = time.perf_counter()
     matched = _match_emergency(text)
     if matched:
         emergency_dept = await db.execute(
@@ -414,6 +542,37 @@ async def assess(
             db.add(record)
         await db.flush()
         await db.commit()
+
+        steps.append(
+            build_step(
+                "emergency_gate",
+                "rule",
+                latency_ms=_ms(step_start),
+                input_snapshot=text,
+                output_snapshot={"matched": matched, "urgency": "stat"},
+            )
+        )
+        # branch_taken 必须落库：急诊分支零 token、零模型调用，与 AI 分支混在一起
+        # 统计会把「急症拦截率」和「AI 分诊准确率」双双算错。
+        # node_count 在此如实收窄到 1：入口按完整 AI 链路预估了 5，急症短路只跑
+        # 「拦截 + 落库」这一个环节，不修正就会被看板误读成链路大面积失败。
+        await finish_workflow_trace(
+            trace_row_id if trace_row_id is not None else trace_id,
+            status="completed",
+            steps=steps,
+            node_count=len(steps),
+            total_latency_ms=_ms(workflow_started),
+            total_tokens=0,
+            total_cost_usd=None,
+            branch_taken=BRANCH_EMERGENCY,
+            final_output={
+                "triage_id": str(record.id),
+                "decision_source": "emergency",
+                "urgency": "stat",
+                "department_code": "EMERGENCY",
+                "confidence": 1.0,
+            },
+        )
         return TriageOutcome(
             triage_id=record.id,
             urgency="stat",
@@ -432,20 +591,56 @@ async def assess(
         )
 
     # ---------- 第 1 步：结构化提取 ----------
+    step_start = time.perf_counter()
     departments = await _load_departments(db)
+    steps.append(
+        build_step(
+            "load_departments",
+            "db_query",
+            latency_ms=_ms(step_start),
+            output_snapshot={"department_count": len(departments)},
+        )
+    )
+
+    step_start = time.perf_counter()
     if rule_only:
         # 批量评估的规则先行路径：整条 LLM 链路跳过（提取与科室推荐都不调），
         # 症状词直接用原始主诉做规则匹配，零 token 消耗。
         extract, model_name, degraded_extract = None, None, False
     else:
-        extract, model_name, degraded_extract = await _extract_symptoms(
-            text, trace_id=trace_id, user_id=user_id
+        extract, model_name, degraded_extract, extract_resp = await (
+            _extract_symptoms_traced(text, trace_id=trace_id, user_id=user_id)
         )
+        if extract_resp is not None:
+            llm_responses.append(extract_resp)
+    steps.append(
+        build_step(
+            "triage_extract",
+            "llm" if not rule_only else "skipped",
+            latency_ms=_ms(step_start),
+            input_snapshot=text,
+            output_snapshot=None if extract is None else extract.model_dump(),
+            error=None if not degraded_extract else "模型降级或结构化校验失败",
+            extra={"skipped": bool(rule_only)},
+        )
+    )
 
+    step_start = time.perf_counter()
     rule_dept, rule_conf, rule_reason = _rule_decide(
         extract.symptoms + extract.accompanying if extract else [],
         departments,
         text,
+    )
+    steps.append(
+        build_step(
+            "rule_triage",
+            "rule",
+            latency_ms=_ms(step_start),
+            output_snapshot={
+                "department": rule_dept.code if rule_dept else None,
+                "confidence": round(rule_conf, 4),
+            },
+        )
     )
 
     decision_source = "rule"
@@ -456,10 +651,15 @@ async def assess(
     llm_model = model_name
 
     # ---------- 第 3 步：科室推荐（AI 路 + 融合） ----------
+    step_start = time.perf_counter()
     if extract is not None and not degraded_extract:
-        ai_dept_name, ai_reason, dept_model, degraded_dept = await _ask_department(
-            extract, text, departments, trace_id=trace_id, user_id=user_id
+        ai_dept_name, ai_reason, dept_model, degraded_dept, dept_resp = await (
+            _ask_department_traced(
+                extract, text, departments, trace_id=trace_id, user_id=user_id
+            )
         )
+        if dept_resp is not None:
+            llm_responses.append(dept_resp)
         llm_model = llm_model or dept_model
         ai_dept: Department | None = None
         if ai_dept_name:
@@ -481,18 +681,60 @@ async def assess(
             )
             decision_source = "ai"
         # 非法科室名 / 降级：保持规则结果，decision_source 仍 rule
+        steps.append(
+            build_step(
+                "triage_department",
+                "llm",
+                latency_ms=_ms(step_start),
+                input_snapshot={"symptoms": extract.symptoms, "severity": extract.severity},
+                output_snapshot={
+                    "ai_department": ai_dept_name,
+                    "resolved": ai_dept.code if ai_dept else None,
+                    "decision_source": decision_source,
+                },
+                error=None if not degraded_dept else "科室推荐降级",
+            )
+        )
+    else:
+        # 未走 AI 科室推荐也要留痕：executed_node_count 只统计真正跑过的节点，
+        # 而「为什么没跑」（提取降级 vs 规则先行）是排障时第一个要问的问题。
+        steps.append(
+            build_step(
+                "triage_department",
+                "skipped",
+                latency_ms=_ms(step_start),
+                output_snapshot={"reason": "extract_unavailable_or_degraded"},
+                extra={"skipped": True},
+            )
+        )
 
     # ---------- 第 2 步：RAG 证据（非阻塞加分） ----------
     # rule_only 同样跳过：证据检索要经 embed 消耗模型配额，
     # 批量评估的规则先行阶段要求整条链路零 LLM 调用。
+    step_start = time.perf_counter()
     evidence: list[EvidenceItem] = []
+    evidence_raw_count = 0
     if not rule_only:
         evidence_query = "、".join(extract.symptoms[:6]) if extract else text
-        evidence = await _gather_evidence(
+        evidence, evidence_raw_count = await _gather_evidence_with_count(
             db, evidence_query, trace_id=trace_id, user_id=user_id
         )
+    steps.append(
+        build_step(
+            "rag_evidence",
+            "retrieval" if not rule_only else "skipped",
+            latency_ms=_ms(step_start),
+            output_snapshot={
+                "raw_hits": evidence_raw_count,
+                "shown": len(evidence),
+                "titles": [e.title for e in evidence[:3]],
+            },
+            extra={"skipped": bool(rule_only)},
+        )
+    )
 
     # ---------- 落库 ----------
+    step_start = time.perf_counter()
     urgency = "urgent" if (extract and extract.severity >= 4) else "routine"
     record = existing or TriageResult(
         patient_id=patient_id,
@@ -523,6 +765,44 @@ async def assess(
         db.add(record)
     await db.flush()
     await db.commit()
+
+    steps.append(
+        build_step(
+            "persist_triage",
+            "db_write",
+            latency_ms=_ms(step_start),
+            output_snapshot={
+                "triage_id": str(record.id),
+                "urgency": urgency,
+                "decision_source": decision_source,
+            },
+        )
+    )
+
+    # ---------- 工作流追踪：出口 ----------
+    # executed_node_count 由 finish 侧按 len(steps) 真实回填（含 skipped 标记的节点，
+    # 它们是「走到了这个环节」的事实记录）；branch_taken 用 decision_source 作分支标识，
+    # 让急诊 / AI / 规则 / 融合四条路在看板上可分别统计。
+    total_tokens, total_cost_usd = sum_usage(llm_responses)
+    await finish_workflow_trace(
+        trace_row_id if trace_row_id is not None else trace_id,
+        status="completed",
+        steps=steps,
+        total_latency_ms=_ms(workflow_started),
+        total_tokens=total_tokens,
+        total_cost_usd=total_cost_usd if total_cost_usd else None,
+        branch_taken=decision_source,
+        final_output={
+            "triage_id": str(record.id),
+            "urgency": urgency,
+            "decision_source": decision_source,
+            "department_code": dept.code if dept else None,
+            "confidence": round(float(confidence), 4) if confidence is not None else None,
+            "degraded": degraded,
+            "evidence_shown": len(evidence),
+            "llm_model": llm_model,
+        },
+    )
 
     return TriageOutcome(
         triage_id=record.id,

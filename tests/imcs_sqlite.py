@@ -53,6 +53,20 @@ def _compile_pg_uuid_on_sqlite(element: PGUUID, compiler, **kwargs) -> str:  # n
     return "CHAR(32)"
 
 
+@compiles(sa.BigInteger, "sqlite")
+def _compile_big_integer_on_sqlite(element: sa.BigInteger, compiler, **kwargs) -> str:  # noqa: ANN001
+    """BigInteger 在 SQLite 上渲染成 INTEGER。
+
+    SQLite 只有类型名恰好为 ``INTEGER`` 的主键才是 rowid 别名、才能获得
+    自增行为；``BIGINT`` 主键插入不给 id 会直接 ``NOT NULL constraint failed``。
+    阶段 6 的可观测表（llm_call_logs / rag_retrieval_logs / workflow_traces /
+    ai_metrics）主键都是 BigInteger，PG 上走 BIGSERIAL 没问题，SQLite 测试
+    环境必须降级。与 PGUUID 补丁同理：只动 DDL 渲染，读写行为不变。
+    """
+    del element, compiler, kwargs
+    return "INTEGER"
+
+
 # ==================== 建表白名单 ====================
 
 AUTH_TABLES: tuple[str, ...] = (
