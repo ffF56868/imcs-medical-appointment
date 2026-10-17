@@ -67,18 +67,18 @@ function go(route: string) {
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="page-container home">
     <div class="home-head">
-      <h1 class="page-title">你好，{{ greeting }}</h1>
-      <p class="page-subtitle">下面是你常用功能的快捷入口</p>
+      <h1 class="page-title home-title">你好，{{ greeting }}</h1>
+      <p class="page-subtitle home-subtitle">下面是你常用功能的快捷入口</p>
     </div>
 
-    <n-grid v-if="entries.length" cols="1 s:2 l:3" responsive="screen" :x-gap="16" :y-gap="16">
+    <n-grid v-if="entries.length" cols="1 s:2 l:2 xl:4" responsive="screen" :x-gap="20" :y-gap="20" class="home-grid">
       <n-grid-item v-for="e in entries" :key="e.route">
         <n-card class="entry-card" hoverable @click="go(e.route)">
           <div class="entry-card__title">{{ e.title }}</div>
           <div class="entry-card__desc">{{ e.desc }}</div>
-          <n-button text type="primary" size="small" @click.stop="go(e.route)">
+          <n-button text type="primary" @click.stop="go(e.route)">
             进入 →
           </n-button>
         </n-card>
@@ -89,23 +89,48 @@ function go(route: string) {
 </template>
 
 <style scoped>
+.home {
+  padding: var(--space-8) var(--space-8);
+}
 .home-head {
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+.home-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--gray-9);
+  margin: 0 0 var(--space-2);
+}
+.home-subtitle {
+  font-size: var(--font-lg);
+  color: var(--gray-7);
+  margin: 0;
+}
+.home-grid {
+  max-width: 1600px;
 }
 .entry-card {
   cursor: pointer;
   height: 100%;
+  min-height: 200px;
+  border: 1px solid var(--border-color-light);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.entry-card:hover {
+  border-color: var(--brand-5);
+  box-shadow: var(--shadow-md);
 }
 .entry-card__title {
-  font-size: var(--font-lg);
+  font-size: 20px;
   font-weight: 600;
   color: var(--gray-9);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 .entry-card__desc {
-  font-size: var(--font-sm);
+  font-size: var(--font-base);
   color: var(--gray-7);
-  margin-bottom: var(--space-3);
-  min-height: 36px;
+  margin-bottom: var(--space-5);
+  min-height: 44px;
+  line-height: 1.7;
 }
 </style>
