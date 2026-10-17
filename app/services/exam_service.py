@@ -938,6 +938,35 @@ async def list_queue(
     return rows[start : start + page_size], total
 
 
+async def list_ordered_requests(
+    db: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[ExamRequest], int]:
+    """待接收（ordered）申请单列表，供检验科「接单」视图使用。
+
+    ``list_queue`` 刻意不含 ordered（工作台是「已在手上」的视图，接单前
+    的单子混进来会让「接收」动作对已接收单重复出现）。但医生开单后
+    单子停在 ordered，检验科没有任何只读入口能发现它们——接收动作就无从
+    发起。这里补上这个缺口：排序与 list_queue 同一口径（紧急度优先、
+    同级先到先做），危急单在接单视图里同样插队。
+    """
+    conditions = [ExamRequest.status == ExamRequestStatus.ORDERED.value]
+    stmt = select(ExamRequest).where(*conditions)
+    total = int(
+        (
+            await db.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    rows.sort(key=lambda r: (_URGENCY_RANK.get(r.urgency, 9), r.created_at, r.id))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    start = (page - 1) * page_size
+    return rows[start : start + page_size], total
+
+
 async def _load_report(db: AsyncSession, report_id: uuid.UUID) -> ExamReport:
     report = await db.get(ExamReport, report_id)
     if report is None:

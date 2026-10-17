@@ -13,10 +13,12 @@ export function fenToYuan(fen: number | null | undefined): number {
   return Math.round(fen) / 100
 }
 
-/** 元数值格式化为「¥12.34」。用于 unit_price 这类本就是元的字段。 */
-export function formatYuan(yuan: number | null | undefined): string {
-  const n = yuan == null || Number.isNaN(yuan) ? 0 : yuan
-  return `¥${n.toFixed(2)}`
+/** 元数值格式化为「¥12.34」。用于 unit_price 这类本就是元的字段。
+ * 入参兼容字符串：后端处方明细的 unit_price/quantity 是 Numeric，
+ * Pydantic 序列化成 JSON 后是字符串，直接 toFixed 会抛。 */
+export function formatYuan(yuan: number | string | null | undefined): string {
+  const n = typeof yuan === 'string' ? Number(yuan) : yuan
+  return `¥${(Number.isFinite(n as number) ? (n as number) : 0).toFixed(2)}`
 }
 
 /** 分 → 「¥12.34」。用于 registration_fee / total_amount 等 int 分字段。 */

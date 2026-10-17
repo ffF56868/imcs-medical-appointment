@@ -50,17 +50,19 @@ export const ERROR_MESSAGES: Record<string, string> = {
 
 const FALLBACK = '操作失败，请稍后再试'
 
-/** 从后端错误体解析出 { code, message }，兼容 detail 为字符串或对象两种形态。 */
-export function parseApiError(data: unknown): { code: string; message: string } {
+/** 从后端错误体解析出 { code, message, detail }，兼容 detail 为字符串或对象两种形态。 */
+export function parseApiError(data: unknown): { code: string; message: string; detail: unknown } {
   const detail = (data as { detail?: unknown })?.detail
   if (typeof detail === 'string') {
-    return { code: '', message: detail || FALLBACK }
+    return { code: '', message: detail || FALLBACK, detail: null }
   }
   if (detail && typeof detail === 'object') {
     const d = detail as { code?: string; message?: string }
     const code = d.code ?? ''
     const message = ERROR_MESSAGES[code] ?? d.message ?? FALLBACK
-    return { code, message }
+    // 原样带出 detail 对象：处方拦截等业务错误的 findings 藏在这里，
+    // 只留 code/message 的话医生端就没法展示「具体哪条安全规则命中」。
+    return { code, message, detail }
   }
-  return { code: '', message: FALLBACK }
+  return { code: '', message: FALLBACK, detail: null }
 }

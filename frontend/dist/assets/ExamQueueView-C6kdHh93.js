@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-DrNP5PNf.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-DtstkDK3.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=o({__name:"ExamQueueView",setup(a){return(m,n)=>(r(),t(e,{title:"检验工作台",note:"检验科报告录入与 AI 解读将在批次 3 实现"}))}});export{_ as default};

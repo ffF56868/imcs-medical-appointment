@@ -16,6 +16,7 @@ import {
 import type { DataTableColumns } from 'naive-ui'
 import { SaveOutline, FlaskOutline, ArrowBackOutline } from '@vicons/ionicons5'
 import { useRoute, useRouter } from 'vue-router'
+import PrescriptionPanel from './PrescriptionPanel.vue'
 import {
   getVisit, saveMedicalRecord, closeVisit, orderExam, listVisitExams,
   type MedicalRecordPayload,
@@ -336,6 +337,14 @@ onMounted(async () => {
         </n-descriptions>
       </n-card>
     </div>
+
+    <n-card :bordered="false" size="small" class="wb-rx-card">
+      <prescription-panel
+        :visit-id="visitId"
+        :diagnosis="visit.diagnosis"
+        :visit-closed="visit.status === 'closed'"
+      />
+    </n-card>
 
     <n-modal
       v-model:show="examModal"

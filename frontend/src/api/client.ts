@@ -20,15 +20,18 @@ import { parseApiError } from '@/utils/errors'
 
 export const API_BASE = '/api/v1'
 
-/** 统一错误类型：业务侧 catch 到它就能拿到 code 与中文 message。 */
+/** 统一错误类型：业务侧 catch 到它就能拿到 code 与中文提示。 */
 export class ApiError extends Error {
   code: string
   status: number
-  constructor(code: string, message: string, status: number) {
+  /** 后端 detail 对象原文（IMCSError 的扩展负载，如处方拦截的 findings 列表）。 */
+  detail: unknown
+  constructor(code: string, message: string, status: number, detail: unknown = null) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.status = status
+    this.detail = detail
   }
 }
 
@@ -132,8 +135,8 @@ http.interceptors.response.use(
 
 function toApiError(error: unknown): ApiError {
   const resp = (error as { response?: { status: number; data: unknown } })?.response
-  const { code, message } = parseApiError(resp?.data)
-  return new ApiError(code, message, resp?.status ?? 0)
+  const { code, message, detail } = parseApiError(resp?.data)
+  return new ApiError(code, message, resp?.status ?? 0, detail)
 }
 
 /** 便捷方法：返回类型友好的 get/post/put/patch/delete。 */

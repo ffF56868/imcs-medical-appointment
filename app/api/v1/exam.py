@@ -313,6 +313,40 @@ async def exam_queue(
 # ==================== 申请单状态流转 ====================
 
 
+@router.get(
+    "/requests",
+    response_model=ExamQueueResponse,
+    summary="待接收申请单（ordered，检验科接单视图）",
+)
+async def list_ordered_requests(
+    db: DbSession,
+    _: CanReadAllRequest,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ExamQueueResponse:
+    """医生刚开出、还没到检验科手上的单子（status=ordered）。
+
+    为什么单独开这一个端点而不是并进 ``GET /queue``：queue 的语义是
+    「已在手上、按 FIFO 推进」，ordered 进去会让「接收」按钮对已接收单
+    重复出现，服务端幂等兜得住，但 UI 语义会乱。接单视图与工作台分开，
+    两个数字（可接 N 单 / 在办 M 单）也各自可解释。
+
+    返回体复用 ExamQueueResponse：``counts`` 这里只有 ordered 一种来源，
+    按 urgency 分布的语义与 queue 完全一致，前端组件可直接共用。
+    """
+    rows, total = await es.list_ordered_requests(db, page=page, page_size=page_size)
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r.urgency] = counts.get(r.urgency, 0) + 1
+    return ExamQueueResponse(
+        items=[to_request_out(r) for r in rows],
+        total=total,
+        page=max(1, page),
+        page_size=min(page_size, 100),
+        counts=counts,
+    )
+
+
 @router.post(
     "/requests/{request_id}/receive", response_model=ExamRequestOut, summary="接收检查申请"
 )

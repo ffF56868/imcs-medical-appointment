@@ -1,0 +1,1 @@
+import{a as i}from"./index-6czQCoQO.js";function e(s){return i.get("/prescriptions",{params:s})}function p(s,r){return i.post(`/dispensing/prescriptions/${s}/approve`,r)}function t(s,r){return i.post(`/dispensing/prescriptions/${s}/dispense`,r)}function o(s){return i.get("/dispensing/records/all",{params:s})}export{o as a,p as b,t as d,e as l};

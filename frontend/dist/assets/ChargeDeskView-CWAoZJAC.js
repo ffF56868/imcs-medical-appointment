@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-DrNP5PNf.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-DtstkDK3.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=o({__name:"ChargeDeskView",setup(a){return(n,p)=>(r(),t(e,{title:"收费台",note:"收费员收款与退费将在批次 3 实现"}))}});export{_ as default};

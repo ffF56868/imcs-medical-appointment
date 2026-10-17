@@ -1,0 +1,1 @@
+function t(n){return n==null||Number.isNaN(n)?0:Math.round(n)/100}function u(n){const r=typeof n=="string"?Number(n):n;return`¥${(Number.isFinite(r)?r:0).toFixed(2)}`}function e(n){return u(t(n))}export{u as a,e as f};
