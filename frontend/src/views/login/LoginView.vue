@@ -120,7 +120,7 @@ async function handleLogin() {
             <n-button
               v-for="d in demoAccounts"
               :key="d.account"
-              size="tiny"
+              size="small"
               secondary
               @click="fillDemo(d.account)"
             >
@@ -148,28 +148,28 @@ async function handleLogin() {
   padding: var(--space-12);
 }
 .login__brand-inner {
-  max-width: 420px;
+  max-width: 560px;
   color: #fff;
 }
 .login__brand-title {
-  font-size: 44px;
+  font-size: 64px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 3px;
   margin: 0;
 }
 .login__brand-sub {
-  font-size: var(--font-xl);
-  margin: var(--space-3) 0 var(--space-6);
+  font-size: 26px;
+  margin: var(--space-4) 0 var(--space-8);
   opacity: 0.92;
 }
 .login__brand-desc {
-  font-size: var(--font-base);
-  line-height: 1.8;
+  font-size: var(--font-lg);
+  line-height: 1.9;
   opacity: 0.72;
   margin: 0;
 }
 .login__panel {
-  width: 460px;
+  width: 580px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -179,25 +179,25 @@ async function handleLogin() {
   width: 100%;
 }
 .login__title {
-  font-size: 22px;
+  font-size: 28px;
   font-weight: 600;
   color: var(--gray-9);
-  margin: 0 0 var(--space-1);
+  margin: 0 0 var(--space-2);
 }
 .login__hint {
-  font-size: var(--font-sm);
+  font-size: var(--font-base);
   color: var(--gray-7);
-  margin: 0 0 var(--space-6);
+  margin: 0 0 var(--space-8);
 }
 .login__demo {
-  margin-top: var(--space-6);
-  padding-top: var(--space-4);
+  margin-top: var(--space-8);
+  padding-top: var(--space-5);
   border-top: 1px solid var(--border-color-light);
 }
 .login__demo-label {
-  font-size: var(--font-xs);
+  font-size: var(--font-sm);
   color: var(--gray-7);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 .login__demo-tags {
   display: flex;
