@@ -7,6 +7,10 @@ database.db
 medical_health.db
 chroma_db/
 
+# 前端依赖目录：体积大且可由 package-lock.json 还原，不入库。
+# frontend/dist 需要入库（nginx 直接挂载该目录提供静态页）。
+frontend/node_modules/
+
 # IDE 本地状态。workspace.xml 记录窗口布局与打开的文件，
 # 每台机器都不同，提交后会频繁产生无意义冲突
 .idea/

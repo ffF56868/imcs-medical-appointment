@@ -1,0 +1,102 @@
+/* 全局基础样式。只放「全站一致」的东西，组件级样式写在各 .vue 的 scoped 里。 */
+
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: var(--font-base);
+  line-height: var(--leading-base);
+  color: var(--gray-8);
+  background-color: var(--gray-3);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 数值一律等宽对齐：金额、计数、日期在表格里必须纵向对齐，
+   否则一列数字参差不齐，是「不专业」最直接的观感来源。 */
+.num,
+.numeric-cell {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* 表格里的金额与数量列右对齐 */
+.cell-amount,
+.cell-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页面级标题：靠左、不居中、无装饰，与营销页彻底区分 */
+.page-title {
+  font-size: var(--font-xl);
+  font-weight: 600;
+  color: var(--gray-9);
+  margin: 0;
+}
+
+.page-subtitle {
+  font-size: var(--font-sm);
+  color: var(--gray-7);
+  margin-top: var(--space-1);
+}
+
+/* 内容区通用留白 */
+.page-container {
+  padding: var(--space-5);
+}
+
+/* 滚动条：细、灰、不抢眼 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gray-6);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-7);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 链接 */
+a {
+  color: var(--brand-6);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--brand-5);
+}
+
+/* 流式回答的光标：只在生成中显示，一个安静的方块，不用花哨动画 */
+.stream-caret::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  margin-left: 2px;
+  background: var(--brand-6);
+  vertical-align: text-bottom;
+  animation: caret-blink 1s step-end infinite;
+}
+@keyframes caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}

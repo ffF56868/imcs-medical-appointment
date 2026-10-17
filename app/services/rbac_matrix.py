@@ -35,6 +35,10 @@ RESOURCES = (
     "triage",
     "ai_monitor",
     "evaluation",
+    # 健康咨询问答（流式）。独立资源而不是复用 knowledge:read：
+    # 患者没有 knowledge:read（那是知识库文档的管理性读权限），
+    # 而复用它就等于为了问答把整个知识库文档列表开放给患者——权限放大。
+    "health_qa",
     "audit_log",
     "user",
 )
@@ -51,6 +55,9 @@ ACTIONS = (
     "pay",  # 收费
     "interpret",  # 触发/查看 AI 解读
     "rebuild",  # 重建知识库索引
+    # 发起健康咨询问答。不用 create：它不创建业务实体（日志是旁路审计），
+    # 用 create 会让人误以为存在「咨询单」这一可管理资源。
+    "ask",
 )
 
 # 角色 -> 权限集合。这是整个系统的授权真相来源。
@@ -75,6 +82,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[tuple[str, str]]] = {
         ("prescription", "read"),
         ("charge_order", "read"),
         ("dispensing", "read"),
+        ("health_qa", "ask"),  # 健康咨询是患者端的核心自助能力
     },
     # ---------- 医生 ----------
     # 医生可读自己患者的全部诊疗数据，但不能收费、不能发药、
@@ -104,6 +112,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[tuple[str, str]]] = {
         ("schedule", "read"),
         ("schedule", "update"),  # 维护自己的排班
         ("knowledge", "read"),
+        ("health_qa", "ask"),
     },
     # ---------- 检验科 ----------
     # 只能操作检查申请与报告，接触不到处方与收费。
@@ -118,6 +127,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[tuple[str, str]]] = {
         ("exam_interpretation", "read_all"),
         ("patient_profile", "read"),  # 核对样本身份需要
         ("knowledge", "read"),
+        ("health_qa", "ask"),
     },
     # ---------- 收费员 ----------
     # 只能读与收，不能改医嘱内容。read_all 是必需的：
@@ -129,6 +139,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[tuple[str, str]]] = {
         ("prescription", "read_all"),  # 核对药费明细
         ("exam_request", "read_all"),  # 核对检查费明细
         ("patient_profile", "read"),
+        ("health_qa", "ask"),
     },
     # ---------- 药师 ----------
     # 核心是 dispense 与 approve：药师审核处方后才发药。
@@ -143,6 +154,7 @@ ROLE_PERMISSIONS: dict[RoleName, set[tuple[str, str]]] = {
         ("patient_profile", "read"),  # 核对过敏史，用药安全必需
         ("charge_order", "read_all"),  # 确认已缴费才发药
         ("knowledge", "read"),
+        ("health_qa", "ask"),
     },
     # ---------- 超级管理员 ----------
     # 只保留系统管理权限。刻意**不给**临床业务权限

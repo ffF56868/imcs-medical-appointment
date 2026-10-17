@@ -41,6 +41,7 @@ from app.models.evaluation import (
     EvalRun,
     EvalRunStatus,
 )
+from app.models.health_qa import HealthQALog
 from app.models.ai import (
     AIMetric,
     AITask,
@@ -82,6 +83,7 @@ __all__ = [
     "EvalKind",
     "EvalRun",
     "EvalRunStatus",
+    "HealthQALog",
     "AIMetric",
     "AITask",
     "AITaskStatus",

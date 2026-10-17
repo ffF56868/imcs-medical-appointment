@@ -1,0 +1,1 @@
+import{P as e}from"./PlaceholderView-Dix9lVHY.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-MhFLquy9.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=o({__name:"DispenseQueueView",setup(a){return(n,p)=>(r(),t(e,{title:"处方审核与发药",note:"药师四查十对审核台将在批次 3 实现"}))}});export{_ as default};

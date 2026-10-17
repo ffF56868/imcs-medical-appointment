@@ -1,47 +1,15 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IMCS 智能医疗预约诊疗系统</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f5f7fa; color: #303133;
-    min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  }
-  .card {
-    background: #fff; border-radius: 8px; padding: 48px 56px; max-width: 620px;
-    box-shadow: 0 2px 12px rgba(0,0,0,.08); text-align: center;
-  }
-  h1 { font-size: 22px; margin-bottom: 8px; }
-  .sub { color: #909399; font-size: 14px; margin-bottom: 32px; }
-  .status { font-size: 14px; line-height: 2; text-align: left; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
-  .ok { background: #67c23a; } .wait { background: #e6a23c; }
-  code { background: #f4f4f5; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
-  a { color: #409eff; text-decoration: none; }
-  .note { margin-top: 28px; padding-top: 20px; border-top: 1px solid #ebeef5;
-          color: #909399; font-size: 13px; line-height: 1.8; text-align: left; }
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>IMCS 智能医疗预约诊疗系统</h1>
-  <p class="sub">后端服务已就绪 · 前端界面开发中（阶段 7）</p>
-
-  <div class="status">
-    <div><span class="dot ok"></span>FastAPI 后端：<a href="/api/health" target="_blank"><code>/api/health</code></a></div>
-    <div><span class="dot ok"></span>接口文档（Swagger）：<a href="/api/docs" target="_blank"><code>/api/docs</code></a></div>
-    <div><span class="dot wait"></span>Vue 3 + Element Plus 前端：尚未构建</div>
-  </div>
-
-  <div class="note">
-    本页面是 <code>frontend/dist/</code> 的占位文件，作用是让 Nginx 静态资源目录存在、
-    容器能正常启动。阶段 7 执行 <code>npm run build</code> 后，构建产物会覆盖此文件。<br>
-    当前请通过 <code>/api/docs</code> 调试接口。
-  </div>
-</div>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IMCS 智能医疗预约诊疗系统</title>
+    <script type="module" crossorigin src="/assets/index-CFg43ufV.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-BtEieJgC.js">
+    <link rel="modulepreload" crossorigin href="/assets/naive-MhFLquy9.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-vbHXlOYc.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
 </html>
