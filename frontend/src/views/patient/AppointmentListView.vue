@@ -11,7 +11,7 @@ import {
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { useRoute } from 'vue-router'
-import { listSchedules, createAppointment, listAppointments, cancelAppointment, checkIn } from '@/api/appointment'
+import { listSchedules, createAppointment, listAppointments, cancelAppointment } from '@/api/appointment'
 import { ApiError } from '@/api/client'
 import type { ScheduleWithDoctor, Appointment } from '@/types/clinical'
 import { SCHEDULE_STATUS_LABELS, APPOINTMENT_STATUS_LABELS } from '@/types/enums'
@@ -111,16 +111,6 @@ async function cancel(row: Appointment) {
   })
 }
 
-async function doCheckIn(row: Appointment) {
-  try {
-    await checkIn(row.id)
-    message.success('签到成功，请在候诊区等待叫号')
-    await loadAppointments()
-  } catch (err) {
-    message.error(err instanceof ApiError ? err.message : '签到失败')
-  }
-}
-
 const scheduleColumns: DataTableColumns<ScheduleWithDoctor> = [
   { title: '科室', key: 'department_name' },
   { title: '医生', key: 'doctor_name' },
@@ -159,7 +149,7 @@ const apptColumns: DataTableColumns<Appointment> = [
     render: (r) => {
       const btns: VNode[] = []
       if (r.status === 'booked') {
-        btns.push(h(NButton, { size: 'tiny', onClick: () => doCheckIn(r) }, { default: () => '签到' }))
+        // 签到由医生端叫号时确认（appointment:update 仅医生持有），患者页不提供
         btns.push(h(NButton, { size: 'tiny', type: 'error', quaternary: true, onClick: () => cancel(r) }, { default: () => '取消' }))
       }
       return h(NSpace, { size: 4 }, { default: () => btns })

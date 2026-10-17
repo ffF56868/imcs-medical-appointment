@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-Dix9lVHY.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-MhFLquy9.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const l=o({__name:"ConsultQueueView",setup(a){return(n,p)=>(r(),t(e,{title:"待诊队列",note:"医生端接诊工作台将在批次 2 实现"}))}});export{l as default};

@@ -1,0 +1,1 @@
+import{P as e}from"./PlaceholderView-DrNP5PNf.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-DtstkDK3.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const m=o({__name:"AllReportsView",setup(a){return(p,n)=>(r(),t(e,{title:"全部报告",note:"检验科全域报告列表将在批次 3 实现"}))}});export{m as default};

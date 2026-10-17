@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-Dix9lVHY.js";import{l as t,d as o,a as r}from"./vendor-BtEieJgC.js";import"./naive-MhFLquy9.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=t({__name:"MyVisitsView",setup(a){return(i,s)=>(r(),o(e,{title:"我的病历",note:"医生历史接诊记录将在批次 2 实现"}))}});export{_ as default};

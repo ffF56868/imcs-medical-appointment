@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-Dix9lVHY.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-MhFLquy9.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=o({__name:"MonitorView",setup(a){return(n,c)=>(r(),t(e,{title:"AI 运行监控",note:"指标曲线、调用明细与 trace 全链路回放将在批次 4 实现"}))}});export{_ as default};

@@ -1,1 +1,0 @@
-import{P as e}from"./PlaceholderView-Dix9lVHY.js";import{l as o,d as t,a as r}from"./vendor-BtEieJgC.js";import"./naive-MhFLquy9.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const _=o({__name:"VisitWorkbenchView",setup(a){return(i,n)=>(r(),t(e,{title:"接诊工作台",note:"病历书写、开检查、处方编辑将在批次 2 实现"}))}});export{_ as default};

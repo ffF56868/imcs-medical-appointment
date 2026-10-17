@@ -1,0 +1,1 @@
+import{P as e}from"./PlaceholderView-DrNP5PNf.js";import{l as o,d as t,a}from"./vendor-BtEieJgC.js";import"./naive-DtstkDK3.js";import"./_plugin-vue_export-helper-DlAUqK2U.js";const l=o({__name:"EvaluationView",setup(r){return(n,i)=>(a(),t(e,{title:"AI 评测中心",note:"题库、检索三指标与 RAGAS 运行将在批次 4 实现"}))}});export{l as default};

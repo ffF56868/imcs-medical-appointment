@@ -163,6 +163,8 @@ export interface ExamRequest {
   created_at: string
   report_id: string | null
   ai_status: string | null
+  /** 检查费（分）。表外项目为 0，由收费侧核价。 */
+  fee_amount?: number
 }
 
 // ==================== 处方 ====================
