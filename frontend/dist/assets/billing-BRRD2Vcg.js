@@ -1,0 +1,1 @@
+import{a as n}from"./index-1o0Xb5FF.js";function l(r){return n.get("/billing/orders",{params:r})}function t(r){return n.get("/billing/orders/all",{params:r})}function s(r,e){return n.post(`/billing/orders/${r}/pay`,e)}function o(r,e){return n.post(`/billing/orders/${r}/refund`,e)}function a(r){return n.post(`/billing/orders/${r}/cancel`,{})}export{t as a,a as c,l,s as p,o as r};
